@@ -4,6 +4,7 @@ import pandas as pd
 import streamlit as st
 from engine import LEAGUES, fixtures_and_history, odds_lookup, candidates, build_parlays, odds_diagnostics
 from analytics import backtest, metrics, calibration, snapshot, settle
+import api_football as af
 
 st.set_page_config(page_title='Football Probability Lab', page_icon='⚽', layout='wide', initial_sidebar_state='expanded')
 st.markdown('''<style>
@@ -22,6 +23,8 @@ with st.sidebar:
     st.header('⚙️ Data & filters')
     football_key=st.text_input('football-data.org token',value=os.getenv('FOOTBALL_DATA_TOKEN',''),type='password')
     odds_key=st.text_input('The Odds API key',value=os.getenv('ODDS_API_KEY',''),type='password')
+    api_key=st.text_input('API-Football key (new)',value=os.getenv('API_FOOTBALL_KEY',''),type='password')
+    source=st.radio('Fixture/history source',['API-Football (new)','football-data.org (legacy)'],index=0 if api_key else 1)
     days=st.slider('Upcoming days',1,7,3)
     selected=st.multiselect('Competitions',list(LEAGUES),default=list(LEAGUES))
     diverse=st.toggle('Diversify leagues in each parlay',value=True,help='Prefer a mix of competitions when eligible selections exist; never override price or minimum probability rules.')
@@ -30,18 +33,32 @@ with st.sidebar:
     if st.button('🔄 Refresh live data',use_container_width=True):
         st.cache_data.clear()
         st.rerun()
-    st.caption('Free-tier API coverage and request quotas vary. Data is cached for 30 minutes. Keys are not shown in reports.')
+    st.caption('API-Football: 100 requests/day, 10/min. Season data cached 6 hours. Refreshing all six leagues can cost 12 requests.')
 
 @st.cache_data(ttl=1800,show_spinner=False)
 def get_fixtures(token,days):return fixtures_and_history(token,days)
 @st.cache_data(ttl=1800,show_spinner=False)
 def get_odds(token):return odds_lookup(token)
+@st.cache_data(ttl=21600,show_spinner=False)
+def get_api_football(token,days,leagues):
+    return af.fixtures_and_history(token,days,list(leagues))
+@st.cache_data(ttl=3600,show_spinner=False)
+def get_provider_preview(token,fixture_id):
+    return af.preview(token,fixture_id)
 
-if not football_key:
-    st.warning('Add your football-data.org token in the sidebar to begin.')
+if source.startswith('API-Football') and not api_key:
+    st.warning('Enter your API-Football key in the sidebar.')
+    st.stop()
+if source.startswith('football-data.org') and not football_key:
+    st.warning('Enter your football-data.org token in the sidebar.')
     st.stop()
 with st.spinner('Loading fixtures and historical results…'):
-    fixtures,history,fixture_notes=get_fixtures(football_key,days)
+    if source.startswith('API-Football'):
+        fixtures,history,fixture_notes,remaining=get_api_football(api_key,days,tuple(selected))
+        st.caption(f'Fixture source: API-Football · Requests remaining (last response): {remaining or "unknown"} · 6-hour cache')
+    else:
+        fixtures,history,fixture_notes=get_fixtures(football_key,days)
+        st.caption('Fixture source: football-data.org')
 fixtures=[m for m in fixtures if m['league'] in selected]
 if fixture_notes:st.warning('Fixture provider: '+fixture_notes)
 with st.spinner('Checking bookmaker prices…'):
@@ -145,6 +162,18 @@ if not analysis.empty:
     col1.metric('Model expected goals (home–away)',first['expected_goals'])
     col2.metric('Historical team samples',first['sample'])
     col3.metric('Evidence coverage',first['sample_quality'])
+    if source.startswith('API-Football') and api_key:
+        fixture_row=next((m for m in fixtures if f"{m['home']} vs {m['away']}"==selected_match),None)
+        if fixture_row and fixture_row.get('api_football_id'):
+            if st.button('🔎 Fetch independent API-Football prediction (1 request)',key='fetch_provider_prediction'):
+                try:
+                    prediction,remaining=get_provider_preview(api_key,fixture_row['api_football_id'])
+                    if prediction:
+                        st.info('Third-party prediction — separate from our model')
+                        st.json(prediction)
+                    else:st.warning('No provider prediction available for this fixture.')
+                    st.caption(f'API-Football requests remaining: {remaining or "unknown"}')
+                except af.APIError as exc:st.warning(str(exc))
     st.dataframe(analysis[['market','probability','odds','bookmaker','ev']].rename(columns={
         'probability':'Model probability','ev':'Model/price discrepancy'}),hide_index=True,use_container_width=True,
         column_config={'Model probability':st.column_config.NumberColumn(format='%.1f%%'),
@@ -208,4 +237,5 @@ if upload is not None:
 
 st.download_button('⬇️ Download analysis CSV',df.to_csv(index=False).encode('utf-8'),file_name=f'football-analysis-{dt.date.today()}.csv',mime='text/csv')
 st.divider()
+st.caption('API-Football data is kept separate from football-data.org; provider predictions are independent and are not blended with our model.')
 st.caption('Research only: high odds imply low hit rates; model-implied value is not verified profit. Method: last 365 days of cross-competition team results, recency weighting, strong shrinkage, and independent Poisson scoring. Opponent strength is NOT adjusted: domestic and European results may not be comparable. Sample coverage is not statistical confidence. No shot-based xG, injuries or lineups. Historical walk-forward evaluation is descriptive, not probability calibration. Prices may be from different bookmakers and cannot necessarily be combined.')
