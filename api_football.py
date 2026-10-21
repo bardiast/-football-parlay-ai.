@@ -96,3 +96,28 @@ def preview(key, fixture_id):
             'winner':(prediction.get('winner') or {}).get('name'),
             'under_over':prediction.get('under_over'),
             'goals':item.get('teams') or {}}, remaining
+
+
+def archive_history(key, selected=None, season=2024):
+    """Historical API-Football matches kept separate from live provider team IDs.
+
+    One request per competition; free-plan season access varies by account.
+    No archive result is mixed into current-season predictions.
+    """
+    if not key:
+        return [], ['No API-Football key entered.'], None
+    history, warnings, remaining = [], [], None
+    names = [name for name in (selected or LEAGUE_IDS) if name in LEAGUE_IDS]
+    for name in names:
+        try:
+            records, remaining = request(key, '/fixtures',
+                                         {'league': LEAGUE_IDS[name], 'season': int(season)})
+        except APIError as exc:
+            warnings.append(f'{name}: {exc}')
+            continue
+        for item in records:
+            row = _row(item, name)
+            if row is not None and 'hg' in row:
+                history.append(row)
+    history = list({(row['league'], row['id']): row for row in history}.values())
+    return history, warnings, remaining
