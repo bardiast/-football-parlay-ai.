@@ -30,14 +30,15 @@ def fixtures_and_history(token, days=3):
 def poisson(k, lam):
     return math.exp(-lam)*lam**k/math.factorial(k)
 
-def estimate(match, history):
+def estimate(match, history, min_samples=5):
     league=[m for m in history if m['league']==match['league']]
     if len(league)<20:return None
     avg_home=sum(x['hg'] for x in league)/len(league)
     avg_away=sum(x['ag'] for x in league)/len(league)
+    league.sort(key=lambda x: x['date'] or '')
     home_recent=[x for x in league if x['home_id']==match['home_id']][-12:]
     away_recent=[x for x in league if x['away_id']==match['away_id']][-12:]
-    if len(home_recent)<3 or len(away_recent)<3:return None
+    if len(home_recent)<min_samples or len(away_recent)<min_samples:return None
     # Shrink small samples toward league averages.
     def shrink(vals, prior):return (sum(vals)+prior*6)/(len(vals)+6)
     home_attack=shrink([x['hg'] for x in home_recent],avg_home)/max(avg_home,.2)
@@ -160,10 +161,10 @@ def match_odds(match, odds):
 
     return best['markets'] if best else {}
 
-def candidates(fixtures,history,odds):
+def candidates(fixtures,history,odds,min_samples=5):
     rows=[]
     for m in fixtures:
-        result=estimate(m,history)
+        result=estimate(m,history,min_samples=min_samples)
         if result is None:continue
         probs,lh,la,nh,na=result
         prices=match_odds(m,odds)
@@ -172,20 +173,46 @@ def candidates(fixtures,history,odds):
             rows.append({'match_id':m['id'],'league':m['league'],'kickoff_utc':m['date'],'match':f"{m['home']} vs {m['away']}",'market':market,'probability':p,'odds':found[0] if found else None,'bookmaker':found[1] if found else None,'ev':p*found[0]-1 if found else None,'expected_goals':f'{lh:.2f}–{la:.2f}','sample':f'{nh}/{na}'})
     return pd.DataFrame(rows)
 
-def build_parlays(df):
-    """Only different matches. Multiplication assumes cross-match independence."""
+def odds_diagnostics(fixtures, odds):
+    """Summarize actual fixture/price matches without extra API calls."""
+    from collections import Counter
+    events=Counter(v.get('league') for v in odds.values() if isinstance(v,dict))
+    matched=[]; unmatched=[]
+    for fixture in fixtures:
+        prices=match_odds(fixture,odds)
+        (matched if prices else unmatched).append(fixture)
+    examples=[{'competition':m['league'],'fixture':f"{m['home']} vs {m['away']}", 'kickoff_utc':m['date'], 'available_odds_events_for_league':events.get(LEAGUES[m['league']],0)} for m in unmatched[:12]]
+    return {'summary':f"{len(odds)} bookmaker fixture records; {len(matched)}/{len(fixtures)} football-data fixtures matched with a bookmaker fixture. By league: "+', '.join(f'{k}: {events.get(v,0)}' for k,v in LEAGUES.items()),'examples':examples}
+
+
+def build_parlays(df, require_odds=True, diversify=True):
+    """Return only distinct matches; never fabricate prices or positive value."""
     if df.empty:return []
-    configurations=[('Conservative',2,0.70),('Balanced',3,0.60),('Aggressive',5,0.52)]
+    configs=[('Conservative',2,.70),('Balanced',3,.60),('Aggressive',5,.52)]
     results=[]
-    for name,legs,threshold in configurations:
+    for name,legs,threshold in configs:
         pool=df[df.probability>=threshold].copy()
-        # Prefer positive estimated EV if odds exist; otherwise maximize probability.
-        pool['rank']=pool.apply(lambda x: (x['ev'] if pd.notna(x['ev']) else -1)+x['probability']*.02,axis=1)
-        if pool['odds'].notna().any():pool=pool[pool['ev'].notna() & (pool['ev']>0)]
-        pool=pool.sort_values(['rank','probability'],ascending=False).drop_duplicates('match_id').head(legs)
-        if len(pool)<legs:continue
-        p=math.prod(pool.probability)
-        priced=pool.odds.notna().all()
-        total_odds=math.prod(pool.odds) if priced else None
-        results.append({'name':name,'legs':pool.to_dict('records'),'probability':p,'odds':total_odds,'ev':p*total_odds-1 if priced else None})
+        if require_odds:
+            pool=pool[pool.odds.notna()]
+        if pool.empty:continue
+        # Ranking is based on probability, not unreliable short-sample estimated EV.
+        pool=pool.sort_values(['probability','odds'],ascending=[False,False],na_position='last').drop_duplicates('match_id')
+        chosen=[]; used_leagues=set()
+        if diversify:
+            for _,row in pool.iterrows():
+                if row['league'] not in used_leagues:
+                    chosen.append(row)
+                    used_leagues.add(row['league'])
+                if len(chosen)==legs:break
+        used_ids={x['match_id'] for x in chosen}
+        for _,row in pool.iterrows():
+            if len(chosen)==legs:break
+            if row['match_id'] not in used_ids:
+                chosen.append(row)
+                used_ids.add(row['match_id'])
+        if len(chosen)<legs:continue
+        probability=math.prod(float(x['probability']) for x in chosen)
+        priced=all(pd.notna(x['odds']) for x in chosen)
+        total_odds=math.prod(float(x['odds']) for x in chosen) if priced else None
+        results.append({'name':name,'legs':[x.to_dict() for x in chosen], 'probability':probability,'odds':total_odds,'ev':probability*total_odds-1 if priced else None})
     return results
