@@ -5,13 +5,14 @@ import pandas as pd
 from engine import estimate
 
 MARKETS = ('Home win','Draw','Away win','1X (home or draw)','X2 (away or draw)',
-           'Over 1.5 goals','Over 2.5 goals','Under 3.5 goals','Both teams score',
+           'Over 1.5 goals','Over 2.5 goals','Over 3.5 goals','Over 4.5 goals','Under 1.5 goals','Under 2.5 goals','Under 3.5 goals','Under 4.5 goals','Both teams score',
            'Home scores','Away scores')
 
 def outcome(market, home, away):
     return {'Home win':home>away,'Draw':home==away,'Away win':home<away,
             '1X (home or draw)':home>=away,'X2 (away or draw)':home<=away,
-            'Over 1.5 goals':home+away>=2,'Over 2.5 goals':home+away>=3,
+            'Over 1.5 goals':home+away>=2,'Over 2.5 goals':home+away>=3,'Over 3.5 goals':home+away>=4,'Over 4.5 goals':home+away>=5,
+            'Under 1.5 goals':home+away<=1,'Under 2.5 goals':home+away<=2,'Under 4.5 goals':home+away<=4,
             'Under 3.5 goals':home+away<=3,'Both teams score':home>0 and away>0,
             'Home scores':home>0,'Away scores':away>0}[market]
 

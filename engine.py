@@ -118,6 +118,11 @@ def estimate(match, history, min_samples=3):
            'X2 (away or draw)':sum(p for h,a,p in matrix if h<=a)/total,
            'Over 1.5 goals':sum(p for h,a,p in matrix if h+a>=2)/total,
            'Over 2.5 goals':sum(p for h,a,p in matrix if h+a>=3)/total,
+           'Over 3.5 goals':sum(p for h,a,p in matrix if h+a>=4)/total,
+           'Over 4.5 goals':sum(p for h,a,p in matrix if h+a>=5)/total,
+           'Under 1.5 goals':sum(p for h,a,p in matrix if h+a<=1)/total,
+           'Under 2.5 goals':sum(p for h,a,p in matrix if h+a<=2)/total,
+           'Under 4.5 goals':sum(p for h,a,p in matrix if h+a<=4)/total,
            'Under 3.5 goals':sum(p for h,a,p in matrix if h+a<=3)/total,
            'Both teams score':sum(p for h,a,p in matrix if h>0 and a>0)/total,
            'Home scores':1-math.exp(-lh),
@@ -184,14 +189,17 @@ def odds_lookup(api_key, region='eu'):
                                 if outcome.get('name')==game.get('home_team'):label='Home win'
                                 elif outcome.get('name')==game.get('away_team'):label='Away win'
                                 elif outcome.get('name')=='Draw':label='Draw'
-                            elif market.get('key')=='totals' and outcome.get('point')==2.5 and outcome.get('name')=='Over':label='Over 2.5 goals'
+                            elif market.get('key')=='totals':
+                                point=outcome.get('point')
+                                if point in (1.5,2.5,3.5,4.5) and outcome.get('name') in ('Over','Under'):
+                                    label=f"{outcome['name']} {point} goals"
                             odd=outcome.get('price')
                             if label and isinstance(odd,(int,float)) and odd>1:
                                 entry['by_bookmaker'].setdefault(book.get('title','Unknown'),{})[label]=(float(odd),book.get('title','Unknown'))
                                 prev=entry['markets'].get(label)
                                 if prev is None or odd>prev[0]:entry['markets'][label]=(float(odd),book.get('title','Unknown'))
         except (requests.RequestException,ValueError) as exc:warnings.append(f'{league}: {str(exc)[:100]}')
-    warnings.append(f'Odds API returned {fetched} fixtures across six competitions; only 1X2 and over 2.5 prices are requested.')
+    warnings.append(f'Odds API returned {fetched} fixtures across six competitions; markets depend on bookmaker coverage.')
     return out,'; '.join(warnings)
 
 def match_odds(match, odds, bookmaker=None):

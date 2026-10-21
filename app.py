@@ -5,6 +5,7 @@ import streamlit as st
 from engine import LEAGUES, fixtures_and_history, odds_lookup, candidates, build_parlays, odds_diagnostics
 from analytics import backtest, metrics, calibration, snapshot, settle
 import api_football as af
+from intelligence import match_intelligence, quote_quality, parlay_exposure, compare_to_baseline
 
 st.set_page_config(page_title='Football Probability Lab', page_icon='⚽', layout='wide', initial_sidebar_state='expanded')
 st.markdown('''<style>
@@ -72,6 +73,17 @@ b.metric('Completed matches',len(history))
 c.metric('Available odds events',len(odds))
 d.metric('Selections with prices',int(df['odds'].notna().sum()) if not df.empty else 0)
 
+with st.expander('🩺 Data provenance & API health',expanded=False):
+    st.write('**Current fixtures and completed scores:** football-data.org (30-minute cache).')
+    st.write('**Current bookmaker quotes:** The Odds API (30-minute cache).')
+    st.write('**Older historical archive:** API-Football (on-demand; 24-hour cache; not used in current forecasts).')
+    st.write('**Model:** Recency-weighted goals model, with uncalibrated Poisson estimates; Elo shown separately as diagnostic context.')
+    st.write('**Persistence:** Downloaded CSV files only; predictions and odds are not automatically archived on Streamlit Cloud.')
+    st.metric('Fixture coverage with bookmaker prices',f"{(df.loc[df['odds'].notna(),'match_id'].nunique()/max(len(fixtures),1)):.0%}" if not df.empty else '0%')
+    if fixture_notes:st.warning('Fixture API warnings: '+fixture_notes)
+    if odds_notes:st.info('Odds API diagnostics: '+odds_notes)
+    st.caption('The displayed API health reflects responses on this load, not a historical uptime monitor. Odds may become stale between refreshes.')
+
 with st.expander('🔎 Odds connection diagnostics',expanded=bool(odds_key and (df.empty or df['odds'].notna().sum()==0))):
     diagnostic=odds_diagnostics(fixtures,odds)
     st.write(diagnostic['summary'])
@@ -127,6 +139,28 @@ else:
                         st.markdown(f"**{leg['match']}** · {leg['market']}")
                         st.caption(f"{leg['league']} · {leg['probability']:.1%} model estimate · {price_text} · {leg['bookmaker'] or 'No bookmaker'} · sample {leg['sample']} ({leg['sample_quality']})")
                         st.divider()
+st.subheader('💹 Market intelligence & evidence')
+st.caption('A bookmaker-implied probability is 1/decimal odds and includes margin. A model/market gap is not a validated advantage.')
+market_view=quote_quality(df[df['odds'].notna()])
+if market_view.empty:
+    st.info('No verified quotes for these fixtures. Model probabilities are not bookmaker odds.')
+else:
+    v=market_view.sort_values('model_market_gap_pp',ascending=False)
+    st.dataframe(v[['league','match','market','probability','odds','bookmaker','implied_probability','model_market_gap_pp','evidence_grade']],
+                 hide_index=True,use_container_width=True,column_config={
+                 'probability':st.column_config.NumberColumn('Model probability',format='%.1%%'),
+                 'implied_probability':st.column_config.NumberColumn('Bookmaker implied',format='%.1%%'),
+                 'model_market_gap_pp':st.column_config.NumberColumn('Gap (percentage points)',format='%+.1f')})
+    st.download_button('⬇️ Export quoted market research',v.to_csv(index=False),file_name='market-intelligence.csv',mime='text/csv')
+
+st.subheader('🧩 Parlay exposure audit')
+all_legs,exposure=parlay_exposure(parlays)
+if exposure.empty:
+    st.info('No generated scenarios to compare.')
+else:
+    st.caption('Repeated selections across scenarios create concentrated exposure. Separate matches are not guaranteed statistically independent.')
+    st.dataframe(exposure.head(25),hide_index=True,use_container_width=True)
+
 st.subheader('📋 All modeled selections')
 show=df.copy()
 if only_priced:show=show[show['odds'].notna()]
@@ -159,6 +193,18 @@ if not analysis.empty:
         'probability':'Model probability','ev':'Model/price discrepancy'}),hide_index=True,use_container_width=True,
         column_config={'Model probability':st.column_config.NumberColumn(format='%.1f%%'),
                        'Model/price discrepancy':st.column_config.NumberColumn(format='%.1%')})
+    fixture=next((f for f in fixtures if str(f['id'])==str(first['match_id'])),None)
+    if fixture:
+        detail=match_intelligence(fixture,history,min_samples=min_samples)
+        if detail:
+            st.markdown('#### Team strength & schedule context')
+            e1,e2,e3,e4=st.columns(4)
+            e1.metric('Home Elo (heuristic)',detail['home_elo'])
+            e2.metric('Away Elo (heuristic)',detail['away_elo'])
+            e3.metric('Home rest days',detail['home_rest_days'] if detail['home_rest_days'] is not None else 'N/A')
+            e4.metric('Away rest days',detail['away_rest_days'] if detail['away_rest_days'] is not None else 'N/A')
+            st.write('**Home last five:**',detail['home_form'],' · **Away last five:**',detail['away_form'])
+            st.caption(f"Elo evidence: {detail['home_elo_matches']} / {detail['away_elo_matches']} games. Elo expected points (home): {detail['elo_expected_points_home']:.1%}; this is NOT a win probability.")
     st.caption('Supporting evidence: prior team results and recency-weighted goal rates. Caution: no verified injuries, lineups or shot-based xG; domestic-vs-European strength is not calibrated.')
 
 st.subheader('🗄️ API-Football historical research (free tier)')
@@ -214,6 +260,9 @@ if not bt.empty:
         q2.metric('Brier score (lower better)',f"{summary['brier']:.3f}")
         q3.metric('50% threshold accuracy',f"{summary['accuracy_at_50']:.1%}")
         q4.metric('Actual occurrence rate',f"{summary['observed_rate']:.1%}")
+        benchmark=compare_to_baseline(bt)
+        if benchmark:
+            st.caption(f"Model Brier {benchmark['model_brier']:.3f} · Diagnostic constant-prevalence Brier {benchmark['constant_prevalence_brier']:.3f}. {benchmark['note']}")
         cal=calibration(bt)
         if not cal.empty:
             st.caption('Calibration: average predicted probability vs observed frequency by probability band.')
