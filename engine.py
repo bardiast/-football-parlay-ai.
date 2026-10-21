@@ -13,7 +13,7 @@ def fixtures_and_history(token, days=3):
     fixtures=[]; history=[]; errors=[]
     for name, code in LEAGUES.items():
         try:
-            r=requests.get(f'{BASE}/competitions/{code}/matches',headers=headers,params={'dateFrom':str(today-dt.timedelta(days=90)),'dateTo':str(today+dt.timedelta(days=days))},timeout=18)
+            r=requests.get(f'{BASE}/competitions/{code}/matches',headers=headers,params={'dateFrom':str(today-dt.timedelta(days=365)),'dateTo':str(today+dt.timedelta(days=days))},timeout=18)
             if not r.ok:
                 errors.append(f'{name}: HTTP {r.status_code}'); continue
             for m in r.json().get('matches',[]):
