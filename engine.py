@@ -30,27 +30,102 @@ def fixtures_and_history(token, days=3):
 def poisson(k, lam):
     return math.exp(-lam)*lam**k/math.factorial(k)
 
-def estimate(match, history, min_samples=5):
-    league=[m for m in history if m['league']==match['league']]
-    if len(league)<20:return None
-    avg_home=sum(x['hg'] for x in league)/len(league)
-    avg_away=sum(x['ag'] for x in league)/len(league)
-    league.sort(key=lambda x: x['date'] or '')
-    home_recent=[x for x in league if x['home_id']==match['home_id']][-12:]
-    away_recent=[x for x in league if x['away_id']==match['away_id']][-12:]
-    if len(home_recent)<min_samples or len(away_recent)<min_samples:return None
-    # Shrink small samples toward league averages.
-    def shrink(vals, prior):return (sum(vals)+prior*6)/(len(vals)+6)
-    home_attack=shrink([x['hg'] for x in home_recent],avg_home)/max(avg_home,.2)
-    away_defense=shrink([x['hg'] for x in away_recent],avg_home)/max(avg_home,.2)
-    away_attack=shrink([x['ag'] for x in away_recent],avg_away)/max(avg_away,.2)
-    home_defense=shrink([x['ag'] for x in home_recent],avg_away)/max(avg_away,.2)
-    lh=max(.2,min(3.8,avg_home*home_attack*away_defense))
-    la=max(.2,min(3.8,avg_away*away_attack*home_defense))
-    ph=[poisson(i,lh) for i in range(12)]; pa=[poisson(i,la) for i in range(12)]
-    matrix=[(h,a,ph[h]*pa[a]) for h in range(12) for a in range(12)]
-    probs={'Home win':sum(p for h,a,p in matrix if h>a),'Draw':sum(p for h,a,p in matrix if h==a),'Away win':sum(p for h,a,p in matrix if h<a),'1X (home or draw)':sum(p for h,a,p in matrix if h>=a),'X2 (away or draw)':sum(p for h,a,p in matrix if h<=a),'Over 1.5 goals':sum(p for h,a,p in matrix if h+a>=2),'Over 2.5 goals':sum(p for h,a,p in matrix if h+a>=3),'Under 3.5 goals':sum(p for h,a,p in matrix if h+a<=3),'Both teams score':sum(p for h,a,p in matrix if h>0 and a>0),'Home scores':sum(p for h,a,p in matrix if h>0),'Away scores':sum(p for h,a,p in matrix if a>0)}
-    return probs,lh,la,len(home_recent),len(away_recent)
+def _weighted_mean(records, field, reference, half_life=75):
+    """Exponentially weight older matches, then shrink toward a competition baseline."""
+    weights = []
+    for row in records:
+        try:
+            age = max(0, (reference - dt.datetime.fromisoformat(row['date'].replace('Z', '+00:00'))).total_seconds() / 86400)
+        except (ValueError, TypeError, AttributeError):
+            continue
+        weights.append((float(row[field]), 0.5 ** (age / half_life)))
+    total = sum(w for _, w in weights)
+    return sum(v*w for v,w in weights)/total if total else None
+
+
+def estimate(match, history, min_samples=3):
+    """Cross-competition, time-safe Poisson baseline; NOT a calibrated forecast.
+
+    Team IDs are shared across football-data competitions. Only results before
+    kickoff are considered. Sparse samples are shrunk heavily toward baselines.
+    A modest league-strength adjustment is an explicit heuristic, not a rating.
+    """
+    try:
+        kickoff = dt.datetime.fromisoformat(match['date'].replace('Z', '+00:00'))
+    except (KeyError, ValueError, TypeError, AttributeError):
+        return None
+    valid = []
+    for row in history:
+        try:
+            when = dt.datetime.fromisoformat(row['date'].replace('Z', '+00:00'))
+            if when >= kickoff or when < kickoff - dt.timedelta(days=365):
+                continue
+            if not isinstance(row.get('hg'), int) or not isinstance(row.get('ag'), int):
+                continue
+            valid.append(row)
+        except (KeyError, ValueError, TypeError, AttributeError):
+            continue
+    league = [r for r in valid if r['league'] == match['league']]
+    if len(league) < 20:
+        # A fallback is necessary for cup fixtures early in a season.
+        league = [r for r in valid if r['league'] != 'Champions League']
+    if len(league) < 20:
+        return None
+    avg_home = max(.4, sum(r['hg'] for r in league)/len(league))
+    avg_away = max(.4, sum(r['ag'] for r in league)/len(league))
+    hid, aid = match.get('home_id'), match.get('away_id')
+    if hid is None or aid is None:
+        return None
+    # Use both home and away matches, including domestic games for CL clubs.
+    home = sorted((r for r in valid if hid in (r['home_id'], r['away_id'])), key=lambda r:r['date'])[-20:]
+    away = sorted((r for r in valid if aid in (r['home_id'], r['away_id'])), key=lambda r:r['date'])[-20:]
+    if len(home) < min_samples or len(away) < min_samples:
+        return None
+    def side_form(records, team_id):
+        transformed = []
+        for r in records:
+            is_home = r['home_id'] == team_id
+            transformed.append({'date':r['date'], 'for':r['hg'] if is_home else r['ag'],
+                                'against':r['ag'] if is_home else r['hg'],
+                                'competition':r['league']})
+        return transformed
+    hf, af = side_form(home,hid), side_form(away,aid)
+    # Home/away factors are fixed conservative priors; sparse split data is not extrapolated.
+    def strength(records, baseline):
+        attack = _weighted_mean(records, 'for', kickoff)
+        defense = _weighted_mean(records, 'against', kickoff)
+        if attack is None or defense is None:
+            return 1., 1.
+        # Shrink strongly to neutral: 8 equivalent prior matches.
+        n = min(len(records), 20)
+        return ((attack*n + baseline*8)/(n+8)/baseline,
+                (defense*n + baseline*8)/(n+8)/baseline)
+    baseline = (avg_home+avg_away)/2
+    h_att,h_con = strength(hf,baseline)
+    a_att,a_con = strength(af,baseline)
+    # Explicitly limited cross-competition heuristic, not empirically fitted.
+    # No adjustment without opponent ratings: cross-league results are NOT comparable.
+    lh = max(.35,min(3.2,avg_home*h_att*a_con))
+    la = max(.35,min(3.2,avg_away*a_att*h_con))
+    ph=[poisson(i,lh) for i in range(15)]
+    pa=[poisson(i,la) for i in range(15)]
+    matrix=[(h,a,ph[h]*pa[a]) for h in range(15) for a in range(15)]
+    total=sum(p for _,_,p in matrix)
+    probs={'Home win':sum(p for h,a,p in matrix if h>a)/total,
+           'Draw':sum(p for h,a,p in matrix if h==a)/total,
+           'Away win':sum(p for h,a,p in matrix if h<a)/total,
+           '1X (home or draw)':sum(p for h,a,p in matrix if h>=a)/total,
+           'X2 (away or draw)':sum(p for h,a,p in matrix if h<=a)/total,
+           'Over 1.5 goals':sum(p for h,a,p in matrix if h+a>=2)/total,
+           'Over 2.5 goals':sum(p for h,a,p in matrix if h+a>=3)/total,
+           'Under 3.5 goals':sum(p for h,a,p in matrix if h+a<=3)/total,
+           'Both teams score':sum(p for h,a,p in matrix if h>0 and a>0)/total,
+           'Home scores':1-math.exp(-lh),
+           'Away scores':1-math.exp(-la)}
+    domestic_h=sum(r['competition']!='Champions League' for r in hf)
+    domestic_a=sum(r['competition']!='Champions League' for r in af)
+    quality='Limited' if min(len(home),len(away))<6 else ('Moderate' if min(len(home),len(away))<12 else 'Broader')
+    return probs,lh,la,len(home),len(away),quality,domestic_h,domestic_a
 
 def normalize_team(name):
     name = unicodedata.normalize('NFKD', name or '')
@@ -166,11 +241,11 @@ def candidates(fixtures,history,odds,min_samples=5):
     for m in fixtures:
         result=estimate(m,history,min_samples=min_samples)
         if result is None:continue
-        probs,lh,la,nh,na=result
+        probs,lh,la,nh,na,quality,dh,da=result
         prices=match_odds(m,odds)
         for market,p in probs.items():
             found=prices.get(market)
-            rows.append({'match_id':m['id'],'league':m['league'],'kickoff_utc':m['date'],'match':f"{m['home']} vs {m['away']}",'market':market,'probability':p,'odds':found[0] if found else None,'bookmaker':found[1] if found else None,'ev':p*found[0]-1 if found else None,'expected_goals':f'{lh:.2f}–{la:.2f}','sample':f'{nh}/{na}'})
+            rows.append({'match_id':m['id'],'league':m['league'],'kickoff_utc':m['date'],'match':f"{m['home']} vs {m['away']}",'market':market,'probability':p,'odds':found[0] if found else None,'bookmaker':found[1] if found else None,'ev':p*found[0]-1 if found else None,'expected_goals':f'{lh:.2f}–{la:.2f}','sample':f'{nh}/{na}', 'sample_quality':quality, 'domestic_samples':f'{dh}/{da}'})
     return pd.DataFrame(rows)
 
 def odds_diagnostics(fixtures, odds):
@@ -214,5 +289,5 @@ def build_parlays(df, require_odds=True, diversify=True):
         probability=math.prod(float(x['probability']) for x in chosen)
         priced=all(pd.notna(x['odds']) for x in chosen)
         total_odds=math.prod(float(x['odds']) for x in chosen) if priced else None
-        results.append({'name':name,'legs':[x.to_dict() for x in chosen], 'probability':probability,'odds':total_odds,'ev':probability*total_odds-1 if priced else None})
+        results.append({'name':name,'legs':[x.to_dict() for x in chosen], 'probability':probability,'odds':total_odds,'ev':None})
     return results

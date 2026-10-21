@@ -25,7 +25,7 @@ with st.sidebar:
     selected=st.multiselect('Competitions',list(LEAGUES),default=list(LEAGUES))
     diverse=st.toggle('Diversify leagues in each parlay',value=True,help='Prefer a mix of competitions when eligible selections exist; never override price or minimum probability rules.')
     only_priced=st.toggle('Require verified bookmaker odds',value=True,help='Parlays without bookmaker prices cannot show a combined decimal price.')
-    min_samples=st.slider('Minimum home/away samples per team',1,10,3)
+    min_samples=st.slider('Minimum matches per team (all competitions)',3,15,6)
     if st.button('🔄 Refresh live data',use_container_width=True):
         st.cache_data.clear()
         st.rerun()
@@ -67,7 +67,7 @@ if df.empty:
     st.stop()
 
 st.subheader('🎯 Parlay scenarios')
-st.caption('Illustrative combinations, not recommendations. Combined probability assumes independence between matches; estimates have not been calibrated or backtested.')
+st.caption('Research-only scenarios. Combined probability assumes independence; no calibration or backtesting. Odds can be from different bookmakers and may not be combinable on one betslip.')
 parlays=build_parlays(df,require_odds=only_priced,diversify=diverse)
 if not parlays:
     st.warning('No complete combinations satisfy the current filters. If bookmaker prices are required, check the odds diagnostics above. You can switch off “Require verified bookmaker odds” to explore unpriced scenarios.')
@@ -79,8 +79,8 @@ else:
                 st.markdown(f"### {item['name']}")
                 st.caption(f"{len(item['legs'])} distinct matches")
                 st.metric('Combined decimal odds',f"{item['odds']:.2f}×" if item['odds'] is not None else 'Unavailable')
-                st.metric('Model-estimated probability',f"{item['probability']:.1%}")
-                if item['ev'] is not None:st.caption(f"Unvalidated estimated EV: {item['ev']:+.1%}")
+                st.metric('Uncalibrated model probability',f"{item['probability']:.1%}")
+                st.caption('No validated expected-value estimate available.')
                 for leg in item['legs']:
                     st.markdown(f"**{leg['match']}**")
                     price_text = f"{leg['odds']:.2f}×" if pd.notna(leg['odds']) else 'No price'
@@ -97,15 +97,15 @@ if show.empty:
 else:
     show['probability']=show['probability']*100
     show['ev']=show['ev']*100
-    display_cols=['league','kickoff_utc','match','market','probability','odds','bookmaker','ev','sample']
+    display_cols=['league','kickoff_utc','match','market','probability','odds','bookmaker','sample','sample_quality','domestic_samples']
     st.dataframe(show[display_cols],use_container_width=True,hide_index=True,column_config={
         'league':'Competition','kickoff_utc':'Kickoff (UTC)','match':'Fixture','market':'Market',
         'probability':st.column_config.NumberColumn('Estimated probability',format='%.1f%%'),
         'odds':st.column_config.NumberColumn('Decimal odds',format='%.2f'),
         'ev':st.column_config.NumberColumn('Model EV',format='%.1f%%'),
-        'sample':'Home/away samples'},
+        'sample':'Team match samples','sample_quality':'Sample coverage','domestic_samples':'Domestic samples'},
         column_order=display_cols)
 
 st.download_button('⬇️ Download analysis CSV',df.to_csv(index=False).encode('utf-8'),file_name=f'football-analysis-{dt.date.today()}.csv',mime='text/csv')
 st.divider()
-st.caption('Method: recent home/away goals with league-average shrinkage and independent Poisson scoring. No xG, injuries, lineups or real-time news. Estimated probabilities and EV are unvalidated and may be inaccurate. Bookmaker prices may change.')
+st.caption('Method: last 365 days of cross-competition team results, recency weighting, strong shrinkage, and independent Poisson scoring. Opponent strength is NOT adjusted: domestic and European results may not be comparable. Sample coverage is not statistical confidence. No xG, injuries, lineups, calibration or backtesting. Prices may be from different bookmakers and cannot necessarily be combined.')
