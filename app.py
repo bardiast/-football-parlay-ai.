@@ -46,7 +46,8 @@ for item in parlays:
         st.markdown(f"### {item['name']} — {len(item['legs'])} legs")
         st.write(f"**Model-estimated combined probability:** {item['probability']:.1%} | **Combined decimal odds:** {item['odds']:.2f}" if item['odds'] else f"**Model-estimated combined probability:** {item['probability']:.1%} | **Combined odds:** unavailable")
         if item['ev'] is not None:st.write(f"**Estimated return per unit staked:** {item['ev']:+.1%} (highly sensitive to model error)")
-        st.dataframe(pd.DataFrame(item['legs'])[['match','market','probability','odds','bookmaker','kickoff_utc']].style.format({'probability':'{:.1%}','odds':'{:.2f}'}),hide_index=True,use_container_width=True)
+       legs_df = pd.DataFrame(item['legs'])[['match', 'market', 'probability', 'odds', 'bookmaker', 'kickoff_utc']]
+st.dataframe(legs_df, use_container_width=True, hide_index=True)
 st.subheader('All modeled selections')
 league=st.selectbox('Competition',['All']+list(LEAGUES))
 view=df if league=='All' else df[df.league==league]
