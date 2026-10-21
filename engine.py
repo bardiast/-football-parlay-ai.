@@ -260,34 +260,113 @@ def odds_diagnostics(fixtures, odds):
     return {'summary':f"{len(odds)} bookmaker fixture records; {len(matched)}/{len(fixtures)} football-data fixtures matched with a bookmaker fixture. By league: "+', '.join(f'{k}: {events.get(v,0)}' for k,v in LEAGUES.items()),'examples':examples}
 
 
-def build_parlays(df, require_odds=True, diversify=True):
-    """Return only distinct matches; never fabricate prices or positive value."""
-    if df.empty:return []
-    configs=[('Conservative',2,.70),('Balanced',3,.60),('Aggressive',5,.52)]
-    results=[]
-    for name,legs,threshold in configs:
-        pool=df[df.probability>=threshold].copy()
-        if require_odds:
-            pool=pool[pool.odds.notna()]
-        if pool.empty:continue
-        # Ranking is based on probability, not unreliable short-sample estimated EV.
-        pool=pool.sort_values(['probability','odds'],ascending=[False,False],na_position='last').drop_duplicates('match_id')
-        chosen=[]; used_leagues=set()
-        if diversify:
-            for _,row in pool.iterrows():
-                if row['league'] not in used_leagues:
-                    chosen.append(row)
-                    used_leagues.add(row['league'])
-                if len(chosen)==legs:break
-        used_ids={x['match_id'] for x in chosen}
-        for _,row in pool.iterrows():
-            if len(chosen)==legs:break
-            if row['match_id'] not in used_ids:
-                chosen.append(row)
-                used_ids.add(row['match_id'])
-        if len(chosen)<legs:continue
-        probability=math.prod(float(x['probability']) for x in chosen)
-        priced=all(pd.notna(x['odds']) for x in chosen)
-        total_odds=math.prod(float(x['odds']) for x in chosen) if priced else None
-        results.append({'name':name,'legs':[x.to_dict() for x in chosen], 'probability':probability,'odds':total_odds,'ev':None})
-    return results
+def build_parlays(df, require_odds=True, diversify=True, max_per_strategy=5,
+                  custom_legs=None, custom_min_probability=.35, custom_target_odds=None):
+    """Construct distinct-match research scenarios, with no invented prices.
+
+    Model probabilities are uncalibrated. 'Value' means a model-vs-price
+    discrepancy, NOT demonstrated profitable expected value.
+    """
+    if df.empty:
+        return []
+    data=df.copy()
+    data=data[data['probability'].between(.01,.99)].copy()
+    data['odds']=pd.to_numeric(data['odds'],errors='coerce')
+    data.loc[data['odds']<=1,'odds']=float('nan')
+    if require_odds:
+        data=data[data['odds'].notna()]
+    if data.empty:
+        return []
+    # Probability bands are soft preferences, not arbitrary exclusions.
+    configs=[
+        ('Conservative',2,3,.72,.99,1.5,3.0,'safety'),
+        ('Balanced',3,4,.55,.82,3.0,7.0,'balance'),
+        ('Aggressive · High Odds',4,6,.32,.70,8.0,25.0,'high_odds'),
+        ('Aggressive · Model Value',3,5,.35,.80,5.0,18.0,'value'),
+    ]
+    if custom_legs:
+        target=float(custom_target_odds or 5)
+        configs.append(('Custom',int(custom_legs),int(custom_legs),float(custom_min_probability),.99,
+                        max(1.01,target*.75),target*1.4,'custom'))
+    output=[]
+    for name,min_legs,max_legs,low,high,target_low,target_high,mode in configs:
+        pool=data.copy()
+        pool['band_distance']=pool['probability'].apply(lambda v:max(low-v,0,v-high))
+        pool['price']=pool['odds'].fillna(1.0)
+        pool['edge']=pool['probability']*pool['price']-1
+        # Rank markets without treating model EV as a verified edge.
+        if mode=='safety':
+            pool['rank']=pool['probability']-pool['band_distance']*.8
+        elif mode=='balance':
+            pool['rank']=pool['probability']*.25+pool['price'].clip(upper=4).apply(math.log)*.25-pool['band_distance']*.8
+        elif mode=='high_odds':
+            pool['rank']=pool['price'].clip(upper=10).apply(math.log)*.65+pool['probability']*.3-pool['band_distance']*.65
+        elif mode=='value':
+            pool['rank']=pool['edge'].clip(-2,2)*.65+pool['probability']*.25-pool['band_distance']*.9
+        else:
+            pool['rank']=pool['probability']*.3+pool['price'].clip(upper=8).apply(math.log)*.5-pool['band_distance']*.7
+        # Multiple markets per fixture may be considered, but never in the same parlay.
+        pool=pool.sort_values('rank',ascending=False).groupby('match_id',sort=False).head(3)
+        pool=pool.head(75)
+        if pool['match_id'].nunique()<min_legs:
+            continue
+        records=pool.to_dict('records')
+        for index,row in enumerate(records):row['_beam_index']=index
+        # Beam search, bounded for responsive Streamlit performance.
+        beam=[([],set(),set(),0.,0.,0.)]  # legs, IDs, leagues, log odds, log probability, ranking
+        completed=[]
+        for depth in range(1,max_legs+1):
+            next_beam=[]
+            for legs,ids,leagues,log_odds,log_prob,rank in beam:
+                for row in records:
+                    mid=row['match_id']
+                    if mid in ids:continue
+                    # Ordered selection prevents permutations and repeated combinations.
+                    idx=row['_beam_index']
+                    if legs and idx<=legs[-1]['_beam_index']:continue
+                    new_legs=legs+[row]
+                    new_leagues=leagues|{row['league']}
+                    price=float(row['price'])
+                    score=rank+float(row['rank'])
+                    if diversify and row['league'] not in leagues and leagues:
+                        score+=.07
+                    state=(new_legs,ids|{mid},new_leagues,log_odds+math.log(price),log_prob+math.log(float(row['probability'])),score)
+                    next_beam.append(state)
+                    if depth>=min_legs:
+                        completed.append(state)
+            if not next_beam:break
+            next_beam.sort(key=lambda x:x[5],reverse=True)
+            beam=next_beam[:120]
+        ranked=[]
+        for legs,ids,leagues,log_odds,log_prob,rank in completed:
+            priced=all(pd.notna(r['odds']) for r in legs)
+            decimal=math.exp(log_odds) if priced else None
+            band_penalty=sum(max(low-r['probability'],0,r['probability']-high) for r in legs)
+            if decimal is not None:
+                target_penalty=max(math.log(target_low)-log_odds,0,log_odds-math.log(target_high))
+            else:
+                target_penalty=0
+            score=rank - 5.0*target_penalty - 1.5*band_penalty
+            if diversify:score+=.08*len(leagues)
+            # prefer 2-leg conservative, 3-leg balanced, larger high-odds slips
+            if mode=='safety':score-=.15*(len(legs)-2)
+            if mode=='high_odds':score+=.10*(len(legs)-min_legs)
+            ranked.append((score,legs,decimal,math.exp(log_prob)))
+        ranked.sort(key=lambda x:x[0],reverse=True)
+        seen=set(); count=0
+        for score,legs,decimal,probability in ranked:
+            signature=tuple(sorted((str(r['match_id']),str(r['market'])) for r in legs))
+            if signature in seen:continue
+            # Avoid near-identical variants with same match set.
+            match_signature=frozenset(r['match_id'] for r in legs)
+            if match_signature in seen:continue
+            seen.add(signature);seen.add(match_signature)
+            cleaned=[{k:v for k,v in row.items() if k not in ('_beam_index','band_distance','price','edge','rank')} for row in legs]
+            books={str(r['bookmaker']) for r in legs if pd.notna(r['bookmaker'])}
+            output.append({'name':name,'variant':count+1,'legs':cleaned,'probability':probability,
+                           'odds':decimal,'target':f'{target_low:g}–{target_high:g}×',
+                           'bookmakers':len(books),'ev':None,
+                           'model_edge':(probability*decimal-1) if decimal is not None else None})
+            count+=1
+            if count>=max_per_strategy:break
+    return output

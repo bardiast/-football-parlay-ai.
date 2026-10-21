@@ -66,28 +66,50 @@ if df.empty:
     st.warning('No eligible selections. Try a longer fixture window, different competitions, or a lower minimum sample threshold.')
     st.stop()
 
-st.subheader('🎯 Parlay scenarios')
-st.caption('Research-only scenarios. Combined probability assumes independence; no calibration or backtesting. Odds can be from different bookmakers and may not be combinable on one betslip.')
-parlays=build_parlays(df,require_odds=only_priced,diversify=diverse)
+st.subheader('🎯 Parlay research studio')
+st.caption('Four distinct strategies · up to five alternatives each · one market per match · model probabilities are uncalibrated.')
+with st.expander('⚙️ Scenario controls',expanded=False):
+    ca,cb,cc=st.columns(3)
+    with ca: variants=st.slider('Alternatives per strategy',1,5,3)
+    with cb: custom_legs=st.slider('Custom legs',2,6,4)
+    with cc: custom_min=st.slider('Custom minimum model probability',.20,.85,.40,.05)
+    custom_target=st.slider('Custom target decimal odds',2.,30.,8.,.5)
+    st.caption('Targets are preferences, not promises. A scenario may fall outside its target when the available markets are limited.')
+parlays=build_parlays(df,require_odds=only_priced,diversify=diverse,
+                     max_per_strategy=variants,custom_legs=custom_legs,
+                     custom_min_probability=custom_min,custom_target_odds=custom_target)
+priced_count=int(df['odds'].notna().sum())
+priced_matches=int(df.loc[df['odds'].notna(),'match_id'].nunique())
+st.caption(f'Available: {len(df)} modeled markets · {priced_count} priced markets across {priced_matches} distinct priced fixtures. '
+           'Five-leg parlays require at least five different priced fixtures when verified odds are enabled.')
 if not parlays:
-    st.warning('No complete combinations satisfy the current filters. If bookmaker prices are required, check the odds diagnostics above. You can switch off “Require verified bookmaker odds” to explore unpriced scenarios.')
+    st.warning('No complete scenarios from available fixtures. Check the distinct priced match count and odds diagnostics; unpriced markets cannot supply combined bookmaker odds.')
 else:
-    columns=st.columns(len(parlays))
-    for col,item in zip(columns,parlays):
-        with col:
-            with st.container(border=True):
-                st.markdown(f"### {item['name']}")
-                st.caption(f"{len(item['legs'])} distinct matches")
-                st.metric('Combined decimal odds',f"{item['odds']:.2f}×" if item['odds'] is not None else 'Unavailable')
-                st.metric('Uncalibrated model probability',f"{item['probability']:.1%}")
-                st.caption('No validated expected-value estimate available.')
-                for leg in item['legs']:
-                    st.markdown(f"**{leg['match']}**")
-                    price_text = f"{leg['odds']:.2f}×" if pd.notna(leg['odds']) else 'No price'
-                    st.caption(f"{leg['league']} · {leg['market']} · {leg['probability']:.1%} estimated · {price_text}")
-                    if pd.notna(leg['bookmaker']):st.caption(f"Bookmaker: {leg['bookmaker']}")
-                    st.divider()
-
+    names=['Conservative','Balanced','Aggressive · High Odds','Aggressive · Model Value','Custom']
+    tabs=st.tabs(['🟢 Conservative','🟡 Balanced','🔴 High odds','🟣 Model value','🛠 Custom'])
+    for tab,name in zip(tabs,names):
+        with tab:
+            items=[p for p in parlays if p['name']==name]
+            if not items:
+                st.info('Not enough distinct eligible matches for this strategy. Try a longer fixture window, or inspect unpriced markets with the verified-odds toggle off.')
+                continue
+            for item in items:
+                with st.container(border=True):
+                    st.markdown(f"#### Scenario {item['variant']} · {len(item['legs'])} legs")
+                    x,y,z=st.columns(3)
+                    x.metric('Combined bookmaker odds',f"{item['odds']:.2f}×" if item['odds'] is not None else 'Unavailable')
+                    y.metric('Uncalibrated joint estimate',f"{item['probability']:.1%}")
+                    z.metric('Preferred odds range',item['target'])
+                    if item['odds'] is not None:
+                        st.caption(f"Model-implied discrepancy vs quoted price: {item['model_edge']:+.1%} (NOT validated expected value).")
+                    if item['bookmakers']>1:
+                        st.warning('Prices come from different bookmakers; this combined price may not be available on any single betslip.')
+                    st.caption('Joint probability multiplies leg estimates and assumes independence across matches; no uncertainty calibration or demonstrated edge.')
+                    for leg in item['legs']:
+                        price_text=f"{leg['odds']:.2f}×" if pd.notna(leg['odds']) else 'Unpriced'
+                        st.markdown(f"**{leg['match']}** · {leg['market']}")
+                        st.caption(f"{leg['league']} · {leg['probability']:.1%} model estimate · {price_text} · {leg['bookmaker'] or 'No bookmaker'} · sample {leg['sample']} ({leg['sample_quality']})")
+                        st.divider()
 st.subheader('📋 All modeled selections')
 show=df.copy()
 if only_priced:show=show[show['odds'].notna()]
@@ -108,4 +130,4 @@ else:
 
 st.download_button('⬇️ Download analysis CSV',df.to_csv(index=False).encode('utf-8'),file_name=f'football-analysis-{dt.date.today()}.csv',mime='text/csv')
 st.divider()
-st.caption('Method: last 365 days of cross-competition team results, recency weighting, strong shrinkage, and independent Poisson scoring. Opponent strength is NOT adjusted: domestic and European results may not be comparable. Sample coverage is not statistical confidence. No xG, injuries, lineups, calibration or backtesting. Prices may be from different bookmakers and cannot necessarily be combined.')
+st.caption('Research only: high odds imply low hit rates; model-implied value is not verified profit. Method: last 365 days of cross-competition team results, recency weighting, strong shrinkage, and independent Poisson scoring. Opponent strength is NOT adjusted: domestic and European results may not be comparable. Sample coverage is not statistical confidence. No xG, injuries, lineups, calibration or backtesting. Prices may be from different bookmakers and cannot necessarily be combined.')
