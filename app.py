@@ -6,6 +6,7 @@ from engine import LEAGUES, fixtures_and_history, odds_lookup, candidates, build
 from analytics import backtest, metrics, calibration, snapshot, settle
 from intelligence import match_intelligence, quote_quality, parlay_exposure, compare_to_baseline
 import api_football as af
+from database import Database, DBError, prediction_records, settle_saved
 
 st.set_page_config(page_title="Football Probability Lab | Pro",page_icon="⚽",layout="wide",initial_sidebar_state="expanded")
 st.markdown("""<style>
@@ -44,6 +45,34 @@ with st.sidebar:
     if st.button('↻ Refresh data',use_container_width=True):
         st.cache_data.clear();st.rerun()
     st.caption('Research estimates only. A high probability is not a guarantee or a validated betting edge.')
+    db_url=st.secrets.get('SUPABASE_URL','')
+    db_key=st.secrets.get('SUPABASE_KEY','')
+    db=None;db_user=None
+    if db_url and db_key:
+        st.divider();st.markdown('### ☁️ Cloud storage')
+        auth=st.session_state.get('db_auth')
+        if auth and auth.get('access_token'):
+            db=Database(db_url,db_key,auth['access_token'])
+            db_user=auth.get('user',{}).get('id')
+            st.success('Connected as '+str(auth.get('user',{}).get('email','user')))
+            if st.button('Sign out',use_container_width=True):
+                st.session_state.pop('db_auth',None);st.rerun()
+        else:
+            with st.form('db_signin'):
+                email=st.text_input('Email')
+                password=st.text_input('Password',type='password')
+                action=st.radio('Account',['Sign in','Sign up'],horizontal=True)
+                submit=st.form_submit_button('Continue',use_container_width=True)
+            if submit:
+                try:
+                    client=Database(db_url,db_key)
+                    response=client.login(email,password) if action=='Sign in' else client.signup(email,password)
+                    if response.get('access_token'):
+                        st.session_state.db_auth=response;st.rerun()
+                    else:st.info('Account created. Check your email to confirm, then sign in.')
+                except DBError as ex:st.error(str(ex))
+            st.caption('Sign in to enable private cloud tracking. No database secret key required.')
+    else:st.caption('Cloud storage is not configured; CSV export remains available.')
 
 if not football_key:
     st.info('Enter your football-data.org token in **API connections** in the sidebar to get started.')
@@ -76,6 +105,15 @@ q=quote_quality(quoted) if not quoted.empty else pd.DataFrame()
 shown=df[df['odds'].gt(1)].copy() if priced_only else df.copy()
 if 'saved_legs' not in st.session_state:st.session_state.saved_legs={}
 if 'watchlist' not in st.session_state:st.session_state.watchlist=[]
+if db and db_user:
+    try:
+        fresh=prediction_records(df,db_user)
+        # Ignore duplicates: the first pre-kickoff estimate remains immutable.
+        if fresh:db.upsert('predictions',fresh,'user_id,match_id,market')
+        # Settlement occurs on app visits, not in the background.
+        settle_saved(db,history)
+    except DBError as ex:st.warning('Cloud tracking unavailable: '+str(ex))
+
 
 def leg_key(row):return str(row['match_id'])+'|'+str(row['market'])
 def add_leg(row):
@@ -125,6 +163,21 @@ with t1:
     st.caption(f'{len(filtered)} matching selections · showing one featured market per fixture. Predictions are not calibrated.')
     if top.empty:st.info('No matches meet these filters. Try disabling Verified odds only.')
     for i,(_,row) in enumerate(top.iterrows()):render_fixture(row,f'discover_{i}_')
+    if db and db_user:
+        with st.expander('⭐ Saved match watchlist'):
+            try:
+                watches=db.rows('watchlist',{'select':'*','order':'created_at.desc','limit':'100'})
+                if watches:
+                    for w in watches:
+                        a,b=st.columns([5,1]);a.write(w['match'])
+                        if b.button('Remove',key='watch_del_'+w['id']):db.delete('watchlist',w['id']);st.rerun()
+                else:st.caption('No saved matches yet.')
+                names=sorted(df['match'].unique())
+                choice=st.selectbox('Add fixture',names,key='watch_choice')
+                if st.button('Save match to watchlist'):
+                    r=df[df['match']==choice].iloc[0]
+                    db.upsert('watchlist',[{'user_id':db_user,'match_id':str(r['match_id']),'match':str(r['match']),'kickoff_utc':str(r['kickoff_utc'])}],'user_id,match_id');st.rerun()
+            except DBError as ex:st.warning(str(ex))
     if view=='Advanced':
         with st.expander('All selections & raw data'):
             st.dataframe(filtered,use_container_width=True,hide_index=True)
@@ -218,6 +271,12 @@ with t3:
         st.caption('Joint estimates assume independence between fixtures and are not calibrated. Related markets are not multiplied.')
         export=pd.DataFrame([r for _,r in rows])
         st.download_button('⬇ Export your parlay',export.to_csv(index=False),file_name='my-parlay.csv',mime='text/csv')
+        if db and db_user:
+            if st.button('☁️ Save parlay to cloud'):
+                try:
+                    legs=[{'match_id':str(r.get('match_id')),'match':str(r.get('match')),'market':str(r.get('market')),'probability':float(r.get('probability')),'odds':float(r['odds']) if pd.notna(r.get('odds')) else None} for _,r in rows]
+                    db._call('POST','/rest/v1/saved_parlays',[{'user_id':db_user,'title':'Manual parlay · '+dt.datetime.now(dt.timezone.utc).strftime('%Y-%m-%d %H:%M UTC'),'legs':legs}]);st.success('Saved')
+                except DBError as ex:st.error(str(ex))
         if st.button('Clear manual parlay'):saved.clear();st.rerun()
     if view=='Advanced':
         with st.expander('Parlay exposure across generated strategies'):
@@ -227,6 +286,33 @@ with t3:
 
 with t4:
     st.markdown('### Performance')
+    if db and db_user:
+        with st.expander('☁️ Your saved prediction history',expanded=True):
+            try:
+                records=db.rows('predictions',{'select':'*','order':'recorded_at_utc.desc','limit':'2000'})
+                if records:
+                    tracked=pd.DataFrame(records)
+                    a,b,c=st.columns(3)
+                    a.metric('Saved predictions',len(tracked))
+                    completed=tracked[tracked['result'].isin(['Won','Lost'])]
+                    b.metric('Settled predictions',len(completed))
+                    c.metric('Settled hit rate',f"{(completed['result']=='Won').mean():.1%}" if len(completed) else 'Pending')
+                    if len(completed):
+                        completed=completed.copy();completed['actual']=(completed['result']=='Won').astype(int)
+                        completed['probability']=pd.to_numeric(completed['probability'])
+                        st.metric('Out-of-sample Brier score',f"{((completed['probability']-completed['actual'])**2).mean():.3f}")
+                    st.dataframe(tracked[['match','market','probability','odds','result','recorded_at_utc']],hide_index=True,use_container_width=True)
+                    st.download_button('Export cloud history',tracked.to_csv(index=False),file_name='cloud_predictions.csv',mime='text/csv')
+                else:st.info('No predictions saved yet. Upcoming selections are captured when you visit while signed in.')
+                st.caption('Auto-capture and settlement happen when the app runs. There is no background scheduler. First recorded prediction is preserved.')
+            except DBError as ex:st.warning('Database tables may need setup: '+str(ex))
+        with st.expander('☁️ Saved parlays'):
+            try:
+                for saved_parlay in db.rows('saved_parlays',{'select':'*','order':'created_at.desc','limit':'50'}):
+                    a,b=st.columns([5,1]);a.write(saved_parlay['title']+' · '+str(len(saved_parlay['legs']))+' legs')
+                    if b.button('Delete',key='del_parlay_'+saved_parlay['id']):db.delete('saved_parlays',saved_parlay['id']);st.rerun()
+                    with st.expander('View legs',expanded=False):st.json(saved_parlay['legs'])
+            except DBError as ex:st.warning(str(ex))
     st.caption('Historical evaluation and pre-kickoff prediction exports. Backtests do not establish profitable betting performance.')
     @st.cache_data(ttl=1800,show_spinner=False)
     def cached_bt(rows,minimum,limit):return backtest([dict(r) for r in rows],minimum,limit)
@@ -292,7 +378,7 @@ with t4:
                     st.dataframe(data.groupby('league').agg(matches=('id','count')).reset_index(),hide_index=True)
                     st.download_button('⬇ Export archive',data.to_csv(index=False),file_name=f'archive-{season}.csv',mime='text/csv')
                 st.caption(f'Remaining requests reported: {remaining or "unknown"}')
-    st.caption('Predictions are stored only in downloaded CSVs. Streamlit session state and temporary files are not durable storage.')
+    st.caption('CSV export remains available. Signed-in users also save predictions to Supabase; updates run when the app is visited, not continuously.')
 
 st.divider()
 st.caption('Football-data.org supplies current results; The Odds API supplies available prices; API-Football archives are separate. Estimates are uncalibrated and do not incorporate confirmed injuries, lineups or genuine shot-based xG. Never assume a model-market discrepancy implies a profitable opportunity.')

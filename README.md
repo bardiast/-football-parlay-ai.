@@ -1,45 +1,18 @@
-# Football Probability Lab
+# Football Probability Lab — Database Edition
 
-Free Streamlit dashboard for European football probability research and hypothetical parlay combinations.
+Retains the Pro Experience UI and the existing three football data sources. Adds private Supabase email/password accounts, row-level-secured cloud prediction tracking, settlement on app visits, saved parlays and match watchlists.
 
-## Run locally on a Mac
+## Setup
+1. In Supabase **SQL Editor**, paste and run `supabase_schema.sql` once.
+2. In Supabase **Authentication → Providers → Email**, ensure email login is enabled. Email confirmation may be required.
+3. In Streamlit Cloud → app settings → Secrets, set `SUPABASE_URL` and `SUPABASE_KEY` (publishable key only). Never use or commit a Supabase secret key.
+4. Upload the package's Python files and requirements.txt to your existing GitHub app repository (and keep SQL file for reference).
+5. Open the app, sign up or sign in using the Cloud storage section in the sidebar.
 
-1. Install Python 3.11+ from https://www.python.org/downloads/.
-2. Download and unzip this project.
-3. Open Terminal in the project folder and run:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-streamlit run app.py
-```
-
-4. Create a free API account at https://www.football-data.org/ and paste your token into the app sidebar. Optional bookmaker prices: https://the-odds-api.com/ (free-tier limitations).
-
-## Free website hosting
-
-1. Create a GitHub repository and upload `app.py`, `engine.py`, `requirements.txt` and this README.
-2. Visit https://share.streamlit.io/ and deploy the repository's `app.py` using the free Community Cloud tier.
-3. Store API keys as Streamlit secrets (recommended) or enter them in the sidebar each session. To use Streamlit secrets, create `.streamlit/secrets.toml` in the hosted app's secrets settings and use the environment-variable alternative below if configured. Never commit real tokens to GitHub.
-
-### Optional secrets setup
-
-For a deployed Streamlit app, add the following to the Streamlit Cloud app secrets interface:
-
-```toml
-FOOTBALL_DATA_TOKEN = "YOUR_TOKEN"
-ODDS_API_KEY = "YOUR_OPTIONAL_KEY"
-```
-
-If you use Streamlit secrets, the app will pick them up from environment variables where supported; otherwise paste them into the sidebar.
-
-## Limitations
-
-- The free football-data.org tier may not provide all six competitions, and some endpoints are rate-limited.
-- Only historical full-time goals feed the model. It does NOT account for injuries, xG, confirmed lineups, or market movement.
-- The odds integration only attempts 1X2 and over 2.5 goals; team-name mismatches can prevent matches.
-- Model probabilities are not validated or calibrated. They are exploratory estimates.
-- Parlay probabilities assume independence across separate matches; shared contextual factors can still correlate outcomes.
-- No automated background refresh or persistent prediction/result tracking is included in this first version. Streamlit refreshes on interaction and caches data for 30 minutes. A reliable daily job requires a separate scheduled workflow and data persistence.
-- Do not use this tool to place bets automatically. Check local laws and age restrictions.
+## Important limitations
+- No background worker: predictions are captured and results are settled when a signed-in user opens or refreshes the app.
+- Only results present in the football-data.org historical response can settle; older records may remain pending.
+- First pre-kickoff prediction per user, fixture and market is kept (duplicates ignored). No odds-change snapshots or advanced fuzzy odds matching yet.
+- Sign-in tokens are held in Streamlit session state and may expire; sign in again if needed.
+- Cloud accounts are private per user via PostgreSQL Row Level Security.
+- Parlay probabilities remain uncalibrated and independence-based.
