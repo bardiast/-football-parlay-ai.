@@ -1,5 +1,5 @@
 """Football analytics for research and paper-tracking, not wagering advice."""
-import os, math, datetime as dt
+import os, math, datetime as dt, re, unicodedata, difflib
 import requests
 import pandas as pd
 
@@ -51,43 +51,97 @@ def estimate(match, history):
     probs={'Home win':sum(p for h,a,p in matrix if h>a),'Draw':sum(p for h,a,p in matrix if h==a),'Away win':sum(p for h,a,p in matrix if h<a),'1X (home or draw)':sum(p for h,a,p in matrix if h>=a),'X2 (away or draw)':sum(p for h,a,p in matrix if h<=a),'Over 1.5 goals':sum(p for h,a,p in matrix if h+a>=2),'Over 2.5 goals':sum(p for h,a,p in matrix if h+a>=3),'Under 3.5 goals':sum(p for h,a,p in matrix if h+a<=3),'Both teams score':sum(p for h,a,p in matrix if h>0 and a>0),'Home scores':sum(p for h,a,p in matrix if h>0),'Away scores':sum(p for h,a,p in matrix if a>0)}
     return probs,lh,la,len(home_recent),len(away_recent)
 
+def normalize_team(name):
+    name = unicodedata.normalize('NFKD', name or '')
+    name = ''.join(c for c in name if not unicodedata.combining(c)).lower()
+    name = re.sub(r'[^a-z0-9 ]', ' ', name)
+    tokens = [t for t in name.split() if t not in {'fc','cf','sc','afc','club','football','sv','v','fk','ac','calcio','1907','1904','1899'}]
+    return ' '.join(tokens)
+
+ALIASES = {
+    'bayern munchen':'bayern munich', 'fc bayern munchen':'bayern munich',
+    'inter milano':'inter milan', 'internazionale milano':'inter milan',
+    'paris saint germain':'psg', 'paris saint germain fc':'psg',
+    'atletico de madrid':'atletico madrid', 'athletic club':'athletic bilbao',
+    'manchester utd':'manchester united', 'man utd':'manchester united',
+    'tottenham hotspur':'tottenham', 'borussia monchengladbach':'gladbach',
+    'rb leipzig':'leipzig', 'r b leipzig':'leipzig',
+    'bayer 04 leverkusen':'bayer leverkusen', 'bayer leverkusen':'bayer leverkusen',
+    '1 fsv mainz 05':'mainz', 'fsv mainz 05':'mainz',
+    '1 fc koln':'cologne', 'fc koln':'cologne',
+    'olympique de marseille':'marseille', 'olympique lyonnais':'lyon',
+    'as monaco':'monaco', 'as roma':'roma', 'ssc napoli':'napoli',
+}
+
+def canonical(name):
+    n = normalize_team(name)
+    return ALIASES.get(n, n)
+
+def team_score(a,b):
+    x,y=canonical(a),canonical(b)
+    if x==y:return 1.0
+    if not x or not y:return 0.0
+    if len(x)>=5 and len(y)>=5 and (x in y or y in x):return .93
+    return difflib.SequenceMatcher(None,x,y).ratio()
+
 def odds_lookup(api_key, region='eu'):
-    """Optional Odds API snapshot. Market matching is limited to h2h and totals."""
+    """Fetch h2h and 2.5 totals; store fixtures for fuzzy, kickoff-checked matching."""
     if not api_key:return {},'No odds API key: displayed probabilities are NOT bookmaker prices.'
     mapping={'PL':'soccer_epl','PD':'soccer_spain_la_liga','BL1':'soccer_germany_bundesliga','SA':'soccer_italy_serie_a','FL1':'soccer_france_ligue_one','CL':'soccer_uefa_champs_league'}
-    out={}; warnings=[]
+    out={}; warnings=[]; fetched=0
     for league,sport in mapping.items():
         try:
             r=requests.get(f'https://api.the-odds-api.com/v4/sports/{sport}/odds/',params={'apiKey':api_key,'regions':region,'markets':'h2h,totals','oddsFormat':'decimal'},timeout=15)
-            if not r.ok: warnings.append(f'{league} odds HTTP {r.status_code}');continue
-            for game in r.json():
-                key=(league,game.get('home_team','').lower(),game.get('away_team','').lower())
+            if not r.ok:
+                warnings.append(f'{league}: odds HTTP {r.status_code} — {r.text[:110]}');continue
+            games=r.json()
+            if not isinstance(games,list):warnings.append(f'{league}: unexpected odds response');continue
+            fetched+=len(games)
+            for game in games:
+                gid=(league,game.get('id') or f"{game.get('home_team')}:{game.get('away_team')}:{game.get('commence_time')}")
+                entry=out.setdefault(gid,{'league':league,'home':game.get('home_team',''),'away':game.get('away_team',''),'date':game.get('commence_time'),'markets':{}})
                 for book in game.get('bookmakers',[]):
                     for market in book.get('markets',[]):
                         for outcome in market.get('outcomes',[]):
                             label=None
-                            if market['key']=='h2h':
-                                if outcome['name']==game.get('home_team'):label='Home win'
-                                elif outcome['name']==game.get('away_team'):label='Away win'
-                                elif outcome['name']=='Draw':label='Draw'
-                            elif market['key']=='totals' and outcome.get('point')==2.5 and outcome['name']=='Over':label='Over 2.5 goals'
-                            if label:
-                                odd=outcome.get('price')
-                                if isinstance(odd,(int,float)) and odd>1 and (key,label) not in out or (isinstance(odd,(int,float)) and odd>out.get((key,label),(0,''))[0]):out[(key,label)]=(float(odd),book.get('title','Unknown'))
-        except (requests.RequestException,ValueError) as exc:warnings.append(f'{league}: {str(exc)[:70]}')
+                            if market.get('key')=='h2h':
+                                if outcome.get('name')==game.get('home_team'):label='Home win'
+                                elif outcome.get('name')==game.get('away_team'):label='Away win'
+                                elif outcome.get('name')=='Draw':label='Draw'
+                            elif market.get('key')=='totals' and outcome.get('point')==2.5 and outcome.get('name')=='Over':label='Over 2.5 goals'
+                            odd=outcome.get('price')
+                            if label and isinstance(odd,(int,float)) and odd>1:
+                                prev=entry['markets'].get(label)
+                                if prev is None or odd>prev[0]:entry['markets'][label]=(float(odd),book.get('title','Unknown'))
+        except (requests.RequestException,ValueError) as exc:warnings.append(f'{league}: {str(exc)[:100]}')
+    warnings.append(f'Odds API returned {fetched} fixtures across six competitions; only 1X2 and over 2.5 prices are requested.')
     return out,'; '.join(warnings)
+
+def match_odds(match, odds):
+    code=LEAGUES[match['league']]
+    try: kickoff=dt.datetime.fromisoformat(match['date'].replace('Z','+00:00'))
+    except (ValueError,AttributeError):return {}
+    best=None; best_score=0
+    for event in odds.values():
+        if event.get('league')!=code:continue
+        try: start=dt.datetime.fromisoformat(event['date'].replace('Z','+00:00'))
+        except (ValueError,TypeError,AttributeError):continue
+        if abs((start-kickoff).total_seconds())>6*3600:continue
+        hs=team_score(match['home'],event['home']); aws=team_score(match['away'],event['away'])
+        if min(hs,aws)<.76:continue
+        score=(hs+aws)/2
+        if score>best_score:best=event;best_score=score
+    return best['markets'] if best else {}
 
 def candidates(fixtures,history,odds):
     rows=[]
-    codes={v:k for k,v in LEAGUES.items()}
     for m in fixtures:
         result=estimate(m,history)
         if result is None:continue
         probs,lh,la,nh,na=result
-        code=LEAGUES[m['league']]
-        key=(code,m['home'].lower(),m['away'].lower())
+        prices=match_odds(m,odds)
         for market,p in probs.items():
-            found=odds.get((key,market))
+            found=prices.get(market)
             rows.append({'match_id':m['id'],'league':m['league'],'kickoff_utc':m['date'],'match':f"{m['home']} vs {m['away']}",'market':market,'probability':p,'odds':found[0] if found else None,'bookmaker':found[1] if found else None,'ev':p*found[0]-1 if found else None,'expected_goals':f'{lh:.2f}–{la:.2f}','sample':f'{nh}/{na}'})
     return pd.DataFrame(rows)
 
