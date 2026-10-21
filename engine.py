@@ -118,22 +118,46 @@ def odds_lookup(api_key, region='eu'):
     return out,'; '.join(warnings)
 
 def match_odds(match, odds):
-    code=LEAGUES[match['league']]
-    try: kickoff=dt.datetime.fromisoformat(match['date'].replace('Z','+00:00'))
-    except (ValueError,AttributeError):return {}
-    best=None; best_score=0
+    code = LEAGUES[match['league']]
+    try:
+        kickoff = dt.datetime.fromisoformat(
+            match['date'].replace('Z', '+00:00')
+        )
+    except (ValueError, AttributeError):
+        return {}
+
+    best = None
+    best_score = 0
+
     for event in odds.values():
         if not isinstance(event, dict):
-    continue
-if event.get('league') != code:
-    continue
-        try: start=dt.datetime.fromisoformat(event['date'].replace('Z','+00:00'))
-        except (ValueError,TypeError,AttributeError):continue
-        if abs((start-kickoff).total_seconds())>6*3600:continue
-        hs=team_score(match['home'],event['home']); aws=team_score(match['away'],event['away'])
-        if min(hs,aws)<.76:continue
-        score=(hs+aws)/2
-        if score>best_score:best=event;best_score=score
+            continue
+
+        if event.get('league') != code:
+            continue
+
+        try:
+            start = dt.datetime.fromisoformat(
+                event['date'].replace('Z', '+00:00')
+            )
+        except (ValueError, TypeError, AttributeError):
+            continue
+
+        if abs((start - kickoff).total_seconds()) > 6 * 3600:
+            continue
+
+        hs = team_score(match['home'], event['home'])
+        aws = team_score(match['away'], event['away'])
+
+        if min(hs, aws) < 0.76:
+            continue
+
+        score = (hs + aws) / 2
+
+        if score > best_score:
+            best = event
+            best_score = score
+
     return best['markets'] if best else {}
 
 def candidates(fixtures,history,odds):
