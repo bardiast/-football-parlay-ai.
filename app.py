@@ -52,7 +52,7 @@ st.subheader('All modeled selections')
 league=st.selectbox('Competition',['All']+list(LEAGUES))
 view=df if league=='All' else df[df.league==league]
 view=view.sort_values('probability',ascending=False)
-st.dataframe(view[['league','kickoff_utc','match','market','probability','odds','bookmaker','ev','expected_goals','sample']].style.format({'probability':'{:.1%}','odds':'{:.2f}','ev':'{:+.1%}'}),hide_index=True,use_container_width=True)
+st.dataframe(view[['league', 'kickoff_utc', 'match', 'market', 'probability', 'odds', 'bookmaker', 'ev', 'expected_goals', 'sample']], use_container_width=True, hide_index=True)
 st.download_button('Download analysis CSV',df.to_csv(index=False).encode('utf-8'),file_name=f'football-analysis-{dt.date.today()}.csv',mime='text/csv')
 st.divider()
 st.caption('Method: home/away goals from up to 90 days of completed matches; shrunk team rates and independent Poisson goal estimates. No injury, lineup, xG, weather, or live-news inputs. Odds matching may miss teams due to naming differences. Estimates are unvalidated and should not be treated as profitable betting signals.')
