@@ -125,6 +125,17 @@ def evidence(row):
     try:n=min(int(float(x)) for x in sample.split('/'))
     except (ValueError,TypeError):n=0
     return 'Broader' if n>=12 else ('Moderate' if n>=6 else 'Limited')
+def save_watchlist_match(row):
+    if not (db and db_user):
+        st.warning('Sign in under Cloud storage to save matches.')
+        return
+    try:
+        db.upsert('watchlist',[{'user_id':db_user,'match_id':str(row['match_id']),
+            'match':str(row['match']),'kickoff_utc':str(row['kickoff_utc'])}], 'user_id,match_id')
+        st.toast('⭐ Match saved to your watchlist')
+    except DBError as ex:
+        st.error('Could not save match: '+str(ex))
+
 def render_fixture(row,prefix,show_add=True):
     with st.container(border=True):
         a,b,c=st.columns([4.5,1.6,1.8],vertical_alignment='center')
@@ -139,6 +150,8 @@ def render_fixture(row,prefix,show_add=True):
             st.metric('Bookmaker price',f"{float(row['odds']):.2f}×" if pd.notna(row['odds']) else 'Not available')
             if show_add and st.button('＋ Add to builder',key=prefix+leg_key(row),use_container_width=True):
                 add_leg(row);st.toast('Added to your parlay builder')
+            if db and db_user and st.button('☆ Watchlist',key='watch_'+prefix+leg_key(row),use_container_width=True):
+                save_watchlist_match(row)
 
 t1,t2,t3,t4=st.tabs(['🏠 Discover','⚽ Match Analysis','🎯 Parlay Builder','📊 Performance'])
 with t1:
@@ -164,13 +177,13 @@ with t1:
     if top.empty:st.info('No matches meet these filters. Try disabling Verified odds only.')
     for i,(_,row) in enumerate(top.iterrows()):render_fixture(row,f'discover_{i}_')
     if db and db_user:
-        with st.expander('⭐ Saved match watchlist'):
+        with st.expander('⭐ Saved match watchlist',expanded=True):
             try:
                 watches=db.rows('watchlist',{'select':'*','order':'created_at.desc','limit':'100'})
                 if watches:
                     for w in watches:
                         a,b=st.columns([5,1]);a.write(w['match'])
-                        if b.button('Remove',key='watch_del_'+w['id']):db.delete('watchlist',w['id']);st.rerun()
+                        if b.button('Remove',key='watch_del_'+str(w['id'])):db.delete('watchlist',w['id']);st.rerun()
                 else:st.caption('No saved matches yet.')
                 names=sorted(df['match'].unique())
                 choice=st.selectbox('Add fixture',names,key='watch_choice')
@@ -194,6 +207,9 @@ with t2:
     match_name=st.selectbox('Fixture',options,key='match_explorer')
     detail_df=df[df['match']==match_name].sort_values('probability',ascending=False)
     first=detail_df.iloc[0]
+    if db and db_user:
+        if st.button('⭐ Save this match to watchlist',key='match_watchlist_primary'):
+            save_watchlist_match(first)
     aa,bb,cc=st.columns(3)
     aa.metric('Estimated goals (home–away)',first['expected_goals'])
     bb.metric('Team history samples',first['sample'])
