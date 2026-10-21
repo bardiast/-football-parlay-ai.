@@ -123,7 +123,10 @@ def match_odds(match, odds):
     except (ValueError,AttributeError):return {}
     best=None; best_score=0
     for event in odds.values():
-        if event.get('league')!=code:continue
+        if not isinstance(event, dict):
+    continue
+if event.get('league') != code:
+    continue
         try: start=dt.datetime.fromisoformat(event['date'].replace('Z','+00:00'))
         except (ValueError,TypeError,AttributeError):continue
         if abs((start-kickoff).total_seconds())>6*3600:continue
