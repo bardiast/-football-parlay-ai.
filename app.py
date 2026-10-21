@@ -4,298 +4,295 @@ import pandas as pd
 import streamlit as st
 from engine import LEAGUES, fixtures_and_history, odds_lookup, candidates, build_parlays, odds_diagnostics
 from analytics import backtest, metrics, calibration, snapshot, settle
-import api_football as af
 from intelligence import match_intelligence, quote_quality, parlay_exposure, compare_to_baseline
+import api_football as af
 
-st.set_page_config(page_title='Football Probability Lab', page_icon='⚽', layout='wide', initial_sidebar_state='expanded')
-st.markdown('''<style>
-.stApp {background: #0b1020; color: #e8edf7;}
-.block-container {padding-top: 2rem; max-width: 1450px;}
-[data-testid="stMetric"] {background:#151e33;border:1px solid #293652;border-radius:14px;padding:16px;}
-[data-testid="stVerticalBlockBorderWrapper"] {background:#111a2c;border-radius:16px;}
-h1,h2,h3 {letter-spacing:-.025em;}
-.hero {padding:24px 26px;background:linear-gradient(115deg,#173a44,#15213b 60%,#181c3c);border:1px solid #35505c;border-radius:18px;margin-bottom:20px;}
-.hero h1 {margin:0;font-size:2.3rem;}.hero p {margin:8px 0 0;color:#b5c9d3;}
-.badge {display:inline-block;border:1px solid #52796d;color:#a7efc5;padding:3px 9px;border-radius:20px;font-size:12px;}
-</style>''', unsafe_allow_html=True)
-st.markdown('<div class="hero"><span class="badge">FOOTBALL ANALYTICS • RESEARCH MODE</span><h1>⚽ Football Probability Lab</h1><p>Fixture analysis · Verifiable bookmaker prices · Transparent probability estimates</p></div>', unsafe_allow_html=True)
+st.set_page_config(page_title="Football Probability Lab | Pro",page_icon="⚽",layout="wide",initial_sidebar_state="expanded")
+st.markdown("""<style>
+.stApp{background:#080d18;color:#eaf0fb}.block-container{max-width:1450px;padding-top:1.4rem;padding-bottom:4rem}
+[data-testid="stSidebar"]{background:#0d1524;border-right:1px solid #22314a}
+[data-testid="stMetric"]{background:#111c2e;border:1px solid #243550;border-radius:15px;padding:13px 16px}
+[data-testid="stVerticalBlockBorderWrapper"]{border-radius:17px;border-color:#263750}
+[data-testid="stTabs"] button{font-size:1rem;font-weight:650}
+h1,h2,h3{letter-spacing:-.035em}h1{font-size:2.2rem!important}h2{font-size:1.45rem!important}
+.hero{padding:24px 28px;background:linear-gradient(105deg,#11383d,#15223b 55%,#1b1b3a);border:1px solid #34535b;border-radius:20px;margin:0 0 18px}
+.hero h1{margin:4px 0 5px}.hero p{margin:0;color:#b4c4d8}.eyebrow{font-size:.76rem;font-weight:750;letter-spacing:.13em;color:#6ce5b5}
+.pill{display:inline-block;background:#17372f;border:1px solid #2e6a59;color:#a4f2d0;border-radius:999px;padding:3px 10px;font-size:.76rem;font-weight:650}
+.muted{color:#98abc5;font-size:.9rem}.section{margin:18px 0 8px;font-weight:750;font-size:1.25rem}
+</style>""",unsafe_allow_html=True)
+st.markdown('<div class="hero"><span class="eyebrow">PRO EXPERIENCE · FOOTBALL RESEARCH</span><h1>⚽ Football Probability Lab</h1><p>Find fixtures. Understand probabilities. Compare real prices. Build your own scenarios.</p></div>',unsafe_allow_html=True)
+
+@st.cache_data(ttl=1800,show_spinner=False)
+def live_fixtures(token,days): return fixtures_and_history(token,days)
+@st.cache_data(ttl=1800,show_spinner=False)
+def live_odds(token): return odds_lookup(token)
+@st.cache_data(ttl=86400,show_spinner=False)
+def archive(token,leagues,season): return af.archive_history(token,list(leagues),season)
 
 with st.sidebar:
-    st.header('⚙️ Data & filters')
-    football_key=st.text_input('football-data.org token',value=os.getenv('FOOTBALL_DATA_TOKEN',''),type='password')
-    odds_key=st.text_input('The Odds API key',value=os.getenv('ODDS_API_KEY',''),type='password')
-    api_key=st.text_input('API-Football key (new)',value=os.getenv('API_FOOTBALL_KEY',''),type='password')
-    st.caption('Live fixtures and predictions: football-data.org. API-Football is used only for optional historical research on accessible older seasons.')
-    days=st.slider('Upcoming days',1,7,3)
+    st.markdown('### ⚙️ Your workspace')
+    view=st.segmented_control('Display mode',['Simple','Advanced'],default='Simple',key='view_mode')
+    days=st.slider('Upcoming days',1,7,5)
     selected=st.multiselect('Competitions',list(LEAGUES),default=list(LEAGUES))
-    diverse=st.toggle('Diversify leagues in each parlay',value=True,help='Prefer a mix of competitions when eligible selections exist; never override price or minimum probability rules.')
-    only_priced=st.toggle('Require verified bookmaker odds',value=True,help='Parlays without bookmaker prices cannot show a combined decimal price.')
-    min_samples=st.slider('Minimum matches per team (all competitions)',3,15,6)
-    if st.button('🔄 Refresh live data',use_container_width=True):
-        st.cache_data.clear()
-        st.rerun()
-    st.caption('API-Football archive: at most 1 request per selected league per archive season, only when requested. Cached for 24 hours.')
-
-@st.cache_data(ttl=1800,show_spinner=False)
-def get_fixtures(token,days):return fixtures_and_history(token,days)
-@st.cache_data(ttl=1800,show_spinner=False)
-def get_odds(token):return odds_lookup(token)
-@st.cache_data(ttl=86400,show_spinner=False)
-def get_archive(token, leagues, season):
-    return af.archive_history(token, list(leagues), season)
-@st.cache_data(ttl=3600,show_spinner=False)
-def get_provider_preview(token,fixture_id):
-    return af.preview(token,fixture_id)
+    priced_only=st.toggle('Verified odds only',value=True)
+    min_samples=st.slider('Minimum team history',3,15,6,help='Minimum relevant completed matches per team. A higher setting reduces coverage.')
+    with st.expander('🔐 API connections',expanded=False):
+        football_key=st.text_input('football-data.org token',value=os.getenv('FOOTBALL_DATA_TOKEN',''),type='password')
+        odds_key=st.text_input('The Odds API key',value=os.getenv('ODDS_API_KEY',''),type='password')
+        api_key=st.text_input('API-Football key',value=os.getenv('API_FOOTBALL_KEY',''),type='password')
+        st.caption('Current matches: football-data.org · Prices: The Odds API · Older archive: API-Football (optional).')
+    if st.button('↻ Refresh data',use_container_width=True):
+        st.cache_data.clear();st.rerun()
+    st.caption('Research estimates only. A high probability is not a guarantee or a validated betting edge.')
 
 if not football_key:
-    st.warning('Enter your football-data.org token to load current fixtures. API-Football free accounts cannot access the current seasons.')
+    st.info('Enter your football-data.org token in **API connections** in the sidebar to get started.')
     st.stop()
-with st.spinner('Loading current fixtures and historical results from football-data.org…'):
-    fixtures,history,fixture_notes=get_fixtures(football_key,days)
-st.caption('Live fixture and model history source: football-data.org · API-Football archive is separate')
-fixtures=[m for m in fixtures if m['league'] in selected]
-if fixture_notes:st.warning('Fixture provider: '+fixture_notes)
-with st.spinner('Checking bookmaker prices…'):
-    odds,odds_notes=get_odds(odds_key)
-if odds_notes:st.info(odds_notes)
-bookmakers=sorted({book for event in odds.values() for book in event.get('by_bookmaker',{})})
+with st.spinner('Loading fixtures and bookmaker prices…'):
+    fixtures,history,fixture_note=live_fixtures(football_key,days)
+    odds,odds_note=live_odds(odds_key)
+fixtures=[f for f in fixtures if f['league'] in selected]
+bookmakers=sorted({b for event in odds.values() if isinstance(event,dict) for b in event.get('by_bookmaker',{})})
 with st.sidebar:
-    bookmaker_choice=st.selectbox('Bookmaker pricing mode',['Best available across bookmakers']+bookmakers,
-        help='Select one bookmaker for a realizable same-bookmaker parlay price. Best available can combine different sportsbooks.')
-with st.spinner('Estimating outcomes…'):
-    df=candidates(fixtures,history,odds,min_samples=min_samples,
-                  bookmaker=None if bookmaker_choice.startswith('Best available') else bookmaker_choice)
-
-
-a,b,c,d=st.columns(4)
-a.metric('Upcoming fixtures',len(fixtures))
-b.metric('Completed matches',len(history))
-c.metric('Available odds events',len(odds))
-d.metric('Selections with prices',int(df['odds'].notna().sum()) if not df.empty else 0)
-
-with st.expander('🩺 Data provenance & API health',expanded=False):
-    st.write('**Current fixtures and completed scores:** football-data.org (30-minute cache).')
-    st.write('**Current bookmaker quotes:** The Odds API (30-minute cache).')
-    st.write('**Older historical archive:** API-Football (on-demand; 24-hour cache; not used in current forecasts).')
-    st.write('**Model:** Recency-weighted goals model, with uncalibrated Poisson estimates; Elo shown separately as diagnostic context.')
-    st.write('**Persistence:** Downloaded CSV files only; predictions and odds are not automatically archived on Streamlit Cloud.')
-    st.metric('Fixture coverage with bookmaker prices',f"{(df.loc[df['odds'].notna(),'match_id'].nunique()/max(len(fixtures),1)):.0%}" if not df.empty else '0%')
-    if fixture_notes:st.warning('Fixture API warnings: '+fixture_notes)
-    if odds_notes:st.info('Odds API diagnostics: '+odds_notes)
-    st.caption('The displayed API health reflects responses on this load, not a historical uptime monitor. Odds may become stale between refreshes.')
-
-with st.expander('🔎 Odds connection diagnostics',expanded=bool(odds_key and (df.empty or df['odds'].notna().sum()==0))):
-    diagnostic=odds_diagnostics(fixtures,odds)
-    st.write(diagnostic['summary'])
-    if diagnostic['examples']:
-        st.dataframe(pd.DataFrame(diagnostic['examples']),hide_index=True,use_container_width=True)
-    st.caption('A working API key does not guarantee the requested games, markets, or bookmakers are covered. Unmatched prices are never invented.')
-
+    bookmaker=st.selectbox('Bookmaker',['Best available (mixed)']+bookmakers,help='Choose a specific bookmaker to avoid mixing prices from different sportsbooks.')
+    if view=='Advanced':
+        with st.expander('Data health',expanded=False):
+            st.write(f'Fixtures: {len(fixtures)} · Historical results: {len(history)} · Odds events: {len(odds)}')
+            if fixture_note:st.warning(fixture_note)
+            if odds_note:st.info(odds_note)
+            st.caption('Fixtures and odds cached for 30 minutes. Archive is on demand.')
+with st.spinner('Estimating match probabilities…'):
+    df=candidates(fixtures,history,odds,min_samples=min_samples,bookmaker=None if bookmaker.startswith('Best available') else bookmaker)
 if df.empty:
-    st.warning('No eligible selections. Try a longer fixture window, different competitions, or a lower minimum sample threshold.')
+    st.warning('No modeled selections for these settings. Try more days or reduce the minimum team history.')
+    with st.expander('Connection diagnostics'):
+        st.write(odds_diagnostics(fixtures,odds)['summary'])
+        if fixture_note:st.write(fixture_note)
     st.stop()
+df['probability']=pd.to_numeric(df['probability'],errors='coerce')
+df['odds']=pd.to_numeric(df['odds'],errors='coerce')
+quoted=df[df['odds'].gt(1)].copy()
+q=quote_quality(quoted) if not quoted.empty else pd.DataFrame()
+shown=df[df['odds'].gt(1)].copy() if priced_only else df.copy()
+if 'saved_legs' not in st.session_state:st.session_state.saved_legs={}
+if 'watchlist' not in st.session_state:st.session_state.watchlist=[]
 
-st.subheader('🎯 Parlay research studio')
-st.caption('Four distinct strategies · up to five alternatives each · one market per match · model probabilities are uncalibrated.')
-with st.expander('⚙️ Scenario controls',expanded=False):
-    ca,cb,cc=st.columns(3)
-    with ca: variants=st.slider('Alternatives per strategy',1,5,3)
-    with cb: custom_legs=st.slider('Custom legs',2,6,4)
-    with cc: custom_min=st.slider('Custom minimum model probability',.20,.85,.40,.05)
-    custom_target=st.slider('Custom target decimal odds',2.,30.,8.,.5)
-    st.caption('Targets are preferences, not promises. A scenario may fall outside its target when the available markets are limited.')
-parlays=build_parlays(df,require_odds=only_priced,diversify=diverse,
-                     max_per_strategy=variants,custom_legs=custom_legs,
-                     custom_min_probability=custom_min,custom_target_odds=custom_target)
-priced_count=int(df['odds'].notna().sum())
-priced_matches=int(df.loc[df['odds'].notna(),'match_id'].nunique())
-st.caption(f'Available: {len(df)} modeled markets · {priced_count} priced markets across {priced_matches} distinct priced fixtures. '
-           'Five-leg parlays require at least five different priced fixtures when verified odds are enabled.')
-if not parlays:
-    st.warning('No complete scenarios from available fixtures. Check the distinct priced match count and odds diagnostics; unpriced markets cannot supply combined bookmaker odds.')
-else:
-    names=['Conservative','Balanced','Aggressive · High Odds','Aggressive · Model Value','Custom']
-    tabs=st.tabs(['🟢 Conservative','🟡 Balanced','🔴 High odds','🟣 Model value','🛠 Custom'])
-    for tab,name in zip(tabs,names):
-        with tab:
-            items=[p for p in parlays if p['name']==name]
-            if not items:
-                st.info('Not enough distinct eligible matches for this strategy. Try a longer fixture window, or inspect unpriced markets with the verified-odds toggle off.')
-                continue
-            for item in items:
-                with st.container(border=True):
-                    st.markdown(f"#### Scenario {item['variant']} · {len(item['legs'])} legs")
-                    x,y,z=st.columns(3)
-                    x.metric('Combined bookmaker odds',f"{item['odds']:.2f}×" if item['odds'] is not None else 'Unavailable')
-                    y.metric('Uncalibrated joint estimate',f"{item['probability']:.1%}")
-                    z.metric('Preferred odds range',item['target'])
-                    if item['odds'] is not None:
-                        st.caption(f"Model-implied discrepancy vs quoted price: {item['model_edge']:+.1%} (NOT validated expected value).")
-                    if item['bookmakers']>1:
-                        st.warning('Prices come from different bookmakers; this combined price may not be available on any single betslip.')
-                    st.caption('Joint probability multiplies leg estimates and assumes independence across matches; no uncertainty calibration or demonstrated edge.')
-                    for leg in item['legs']:
-                        price_text=f"{leg['odds']:.2f}×" if pd.notna(leg['odds']) else 'Unpriced'
-                        st.markdown(f"**{leg['match']}** · {leg['market']}")
-                        st.caption(f"{leg['league']} · {leg['probability']:.1%} model estimate · {price_text} · {leg['bookmaker'] or 'No bookmaker'} · sample {leg['sample']} ({leg['sample_quality']})")
-                        st.divider()
-st.subheader('💹 Market intelligence & evidence')
-st.caption('A bookmaker-implied probability is 1/decimal odds and includes margin. A model/market gap is not a validated advantage.')
-market_view=quote_quality(df[df['odds'].notna()])
-if market_view.empty:
-    st.info('No verified quotes for these fixtures. Model probabilities are not bookmaker odds.')
-else:
-    v=market_view.sort_values('model_market_gap_pp',ascending=False)
-    st.dataframe(v[['league','match','market','probability','odds','bookmaker','implied_probability','model_market_gap_pp','evidence_grade']],
-                 hide_index=True,use_container_width=True,column_config={
-                 'probability':st.column_config.NumberColumn('Model probability',format='%.1%%'),
-                 'implied_probability':st.column_config.NumberColumn('Bookmaker implied',format='%.1%%'),
-                 'model_market_gap_pp':st.column_config.NumberColumn('Gap (percentage points)',format='%+.1f')})
-    st.download_button('⬇️ Export quoted market research',v.to_csv(index=False),file_name='market-intelligence.csv',mime='text/csv')
+def leg_key(row):return str(row['match_id'])+'|'+str(row['market'])
+def add_leg(row):
+    key=leg_key(row)
+    if key not in st.session_state.saved_legs:
+        st.session_state.saved_legs[key]={k:(v.item() if hasattr(v,'item') else v) for k,v in row.items()}
+def evidence(row):
+    sample=str(row.get('sample','0/0'))
+    try:n=min(int(float(x)) for x in sample.split('/'))
+    except (ValueError,TypeError):n=0
+    return 'Broader' if n>=12 else ('Moderate' if n>=6 else 'Limited')
+def render_fixture(row,prefix,show_add=True):
+    with st.container(border=True):
+        a,b,c=st.columns([4.5,1.6,1.8],vertical_alignment='center')
+        with a:
+            st.markdown(f"**{row['match']}**")
+            st.caption(f"{row['league']} · {str(row['kickoff_utc'])[:16]} UTC")
+            st.write(f"{row['market']} · Evidence: **{evidence(row)}**")
+        with b:
+            st.metric('Model estimate',f"{float(row['probability']):.0%}")
+            st.caption('Uncalibrated')
+        with c:
+            st.metric('Bookmaker price',f"{float(row['odds']):.2f}×" if pd.notna(row['odds']) else 'Not available')
+            if show_add and st.button('＋ Add to builder',key=prefix+leg_key(row),use_container_width=True):
+                add_leg(row);st.toast('Added to your parlay builder')
 
-st.subheader('🧩 Parlay exposure audit')
-all_legs,exposure=parlay_exposure(parlays)
-if exposure.empty:
-    st.info('No generated scenarios to compare.')
-else:
-    st.caption('Repeated selections across scenarios create concentrated exposure. Separate matches are not guaranteed statistically independent.')
-    st.dataframe(exposure.head(25),hide_index=True,use_container_width=True)
+t1,t2,t3,t4=st.tabs(['🏠 Discover','⚽ Match Analysis','🎯 Parlay Builder','📊 Performance'])
+with t1:
+    a,b,c,d=st.columns(4)
+    a.metric('Upcoming matches',len(fixtures))
+    b.metric('Analyzed matches',df['match_id'].nunique())
+    c.metric('Matches with prices',quoted['match_id'].nunique())
+    d.metric('Priced markets',len(quoted))
+    st.markdown('<div class="section">Find a match</div>',unsafe_allow_html=True)
+    fa,fb,fc=st.columns([2.3,1.3,1.4])
+    with fa:search=st.text_input('Search team',placeholder='Search Arsenal, Barcelona, Madrid…',key='discover_search')
+    with fb:league_filter=st.selectbox('Competition',['All']+selected,key='discover_league')
+    with fc:sort=st.selectbox('Sort by',['Highest probability','Highest odds','Soonest kickoff'],key='discover_sort')
+    markets=sorted(df['market'].unique())
+    market_filter=st.multiselect('Markets',markets,default=[],placeholder='All markets')
+    filtered=shown.copy()
+    if search:filtered=filtered[filtered['match'].str.contains(search,case=False,regex=False,na=False)]
+    if league_filter!='All':filtered=filtered[filtered['league']==league_filter]
+    if market_filter:filtered=filtered[filtered['market'].isin(market_filter)]
+    filtered=filtered.sort_values({'Highest probability':'probability','Highest odds':'odds','Soonest kickoff':'kickoff_utc'}[sort],ascending=sort=='Soonest kickoff')
+    top=filtered.drop_duplicates('match_id').head(12)
+    st.caption(f'{len(filtered)} matching selections · showing one featured market per fixture. Predictions are not calibrated.')
+    if top.empty:st.info('No matches meet these filters. Try disabling Verified odds only.')
+    for i,(_,row) in enumerate(top.iterrows()):render_fixture(row,f'discover_{i}_')
+    if view=='Advanced':
+        with st.expander('All selections & raw data'):
+            st.dataframe(filtered,use_container_width=True,hide_index=True)
+            st.download_button('Export selections CSV',filtered.to_csv(index=False),file_name='selections.csv',mime='text/csv')
+        with st.expander('Odds connection diagnostics'):
+            diagnostic=odds_diagnostics(fixtures,odds)
+            st.write(diagnostic['summary'])
+            if diagnostic['examples']:st.dataframe(pd.DataFrame(diagnostic['examples']),hide_index=True)
 
-st.subheader('📋 All modeled selections')
-show=df.copy()
-if only_priced:show=show[show['odds'].notna()]
-show=show.sort_values(['probability','league'],ascending=[False,True])
-if show.empty:
-    st.info('No selections with verified bookmaker prices. Disable “Require verified bookmaker odds” to inspect model-only outcomes.')
-else:
-    show['probability']=show['probability']*100
-    show['ev']=show['ev']*100
-    display_cols=['league','kickoff_utc','match','market','probability','odds','bookmaker','sample','sample_quality','domestic_samples']
-    st.dataframe(show[display_cols],use_container_width=True,hide_index=True,column_config={
-        'league':'Competition','kickoff_utc':'Kickoff (UTC)','match':'Fixture','market':'Market',
-        'probability':st.column_config.NumberColumn('Estimated probability',format='%.1f%%'),
-        'odds':st.column_config.NumberColumn('Decimal odds',format='%.2f'),
-        'ev':st.column_config.NumberColumn('Model EV',format='%.1f%%'),
-        'sample':'Team match samples','sample_quality':'Sample coverage','domestic_samples':'Domestic samples'},
-        column_order=display_cols)
-
-st.subheader('🧠 Match intelligence')
-match_names=sorted(df['match'].unique())
-selected_match=st.selectbox('Explore fixture',match_names,key='explorer_match')
-analysis=df[df['match']==selected_match].sort_values('probability',ascending=False)
-if not analysis.empty:
-    first=analysis.iloc[0]
-    col1,col2,col3=st.columns(3)
-    col1.metric('Model expected goals (home–away)',first['expected_goals'])
-    col2.metric('Historical team samples',first['sample'])
-    col3.metric('Evidence coverage',first['sample_quality'])
-    st.dataframe(analysis[['market','probability','odds','bookmaker','ev']].rename(columns={
-        'probability':'Model probability','ev':'Model/price discrepancy'}),hide_index=True,use_container_width=True,
-        column_config={'Model probability':st.column_config.NumberColumn(format='%.1f%%'),
-                       'Model/price discrepancy':st.column_config.NumberColumn(format='%.1%')})
+with t2:
+    st.markdown('### Match Analysis')
+    st.caption('Pick a fixture to explore its available markets, model assumptions and team history.')
+    options=sorted(df['match'].unique())
+    match_name=st.selectbox('Fixture',options,key='match_explorer')
+    detail_df=df[df['match']==match_name].sort_values('probability',ascending=False)
+    first=detail_df.iloc[0]
+    aa,bb,cc=st.columns(3)
+    aa.metric('Estimated goals (home–away)',first['expected_goals'])
+    bb.metric('Team history samples',first['sample'])
+    cc.metric('Evidence quality',evidence(first))
+    st.markdown('#### Markets for this match')
+    for i,(_,row) in enumerate(detail_df.head(12).iterrows()):render_fixture(row,f'match_{i}_')
     fixture=next((f for f in fixtures if str(f['id'])==str(first['match_id'])),None)
     if fixture:
-        detail=match_intelligence(fixture,history,min_samples=min_samples)
-        if detail:
-            st.markdown('#### Team strength & schedule context')
-            e1,e2,e3,e4=st.columns(4)
-            e1.metric('Home Elo (heuristic)',detail['home_elo'])
-            e2.metric('Away Elo (heuristic)',detail['away_elo'])
-            e3.metric('Home rest days',detail['home_rest_days'] if detail['home_rest_days'] is not None else 'N/A')
-            e4.metric('Away rest days',detail['away_rest_days'] if detail['away_rest_days'] is not None else 'N/A')
-            st.write('**Home last five:**',detail['home_form'],' · **Away last five:**',detail['away_form'])
-            st.caption(f"Elo evidence: {detail['home_elo_matches']} / {detail['away_elo_matches']} games. Elo expected points (home): {detail['elo_expected_points_home']:.1%}; this is NOT a win probability.")
-    st.caption('Supporting evidence: prior team results and recency-weighted goal rates. Caution: no verified injuries, lineups or shot-based xG; domestic-vs-European strength is not calibrated.')
+        context=match_intelligence(fixture,history,min_samples=min_samples)
+        if context:
+            st.markdown('#### Form and schedule')
+            x,y,z,w=st.columns(4)
+            x.metric('Home Elo (context)',context['home_elo']);y.metric('Away Elo (context)',context['away_elo'])
+            z.metric('Home rest (days)',context['home_rest_days'] if context['home_rest_days'] is not None else 'Unknown')
+            w.metric('Away rest (days)',context['away_rest_days'] if context['away_rest_days'] is not None else 'Unknown')
+            st.write('**Home last five:**',context['home_form'],' · **Away last five:**',context['away_form'])
+            st.caption('Elo ratings are diagnostic and do not directly change the goal model. Rest days may be unavailable.')
+    if not q.empty:
+        prices=q[q['match']==match_name]
+        if not prices.empty:
+            with st.expander('Bookmaker vs model',expanded=view=='Advanced'):
+                st.dataframe(prices[['market','probability','odds','bookmaker','implied_probability','model_market_gap_pp','evidence_grade']],hide_index=True,use_container_width=True)
+                st.caption('Model-market gaps are not validated expected value. Bookmaker implied probabilities include margin.')
+    st.info('Limitations: no confirmed lineups, verified injuries or shot-based xG. Cross-league strength is not calibrated; probabilities are estimates, not guarantees.')
 
-st.subheader('🗄️ API-Football historical research (free tier)')
-st.caption('Optional 2022–2024 archive. Free-tier access varies by season and competition. Historical records are NOT combined with live model inputs: team IDs differ by provider and older form is stale.')
-with st.expander('Explore historical seasons', expanded=False):
-    archive_season=st.selectbox('Historical season starting year',[2024,2023,2022])
-    if not api_key:
-        st.info('Enter the API-Football key in the sidebar to explore archived seasons.')
-    elif not selected:
-        st.info('Select at least one competition.')
+with t3:
+    st.markdown('### Parlay Builder')
+    st.caption('Choose a strategy or build manually. Every leg comes from an actual modeled market; bookmaker prices are never invented.')
+    strategy=st.radio('Approach',['Conservative','Balanced','Aggressive · High Odds','Aggressive · Model Value','Custom'],horizontal=True)
+    with st.expander('⚙️ Strategy options',expanded=strategy=='Custom'):
+        p1,p2,p3=st.columns(3)
+        with p1:alternatives=st.slider('Alternatives',1,5,3)
+        with p2:custom_legs=st.slider('Custom legs',2,6,4)
+        with p3:custom_min=st.slider('Minimum custom probability',.20,.85,.40,.05)
+        target=st.slider('Target combined odds (custom)',2.,30.,8.,.5)
+        diversify=st.toggle('Prefer different leagues',value=True)
+        require=st.toggle('Only use verified bookmaker prices',value=priced_only)
+    parlays=build_parlays(df,require_odds=require,diversify=diversify,max_per_strategy=alternatives,
+                         custom_legs=custom_legs,custom_min_probability=custom_min,custom_target_odds=target)
+    matches=[p for p in parlays if p['name']==strategy]
+    if not matches:st.info('Not enough distinct eligible matches for this strategy. Extend the fixture window or inspect unpriced markets.')
+    for item in matches:
+        with st.container(border=True):
+            st.markdown(f"#### {strategy} · Option {item['variant']}")
+            a,b,c=st.columns(3)
+            a.metric('Combined odds',f"{item['odds']:.2f}×" if item['odds'] is not None else 'Unavailable')
+            b.metric('Model joint estimate',f"{item['probability']:.1%}")
+            c.metric('Legs',len(item['legs']))
+            for leg in item['legs']:
+                st.write(f"• **{leg['match']}** — {leg['market']} · {leg['probability']:.0%} · "+(f"{leg['odds']:.2f}×" if pd.notna(leg['odds']) else 'No price'))
+            if item['bookmakers']>1:st.warning('Mixed bookmakers: this combined price may not exist at one sportsbook.')
+            if st.button('＋ Copy these legs to manual builder',key=f"copy_{strategy}_{item['variant']}"):
+                for leg in item['legs']:add_leg(leg)
+                st.toast('Scenario added to manual builder')
+    st.divider()
+    st.markdown('#### Your manual parlay')
+    saved=st.session_state.saved_legs
+    if not saved:st.info('Add markets from Discover, Match Analysis, or a strategy above.')
     else:
-        if st.button('📥 Load selected archive (uses up to one API request per competition)', key='archive_load'):
-            with st.spinner('Fetching archived completed matches…'):
-                archive, archive_warnings, archive_remaining=get_archive(api_key,tuple(selected),archive_season)
-            st.session_state['archive_data']=(archive,archive_warnings,archive_remaining,archive_season,tuple(selected))
-        archive_state=st.session_state.get('archive_data')
-        if archive_state and archive_state[3:]==(archive_season,tuple(selected)):
-            archive,archive_warnings,archive_remaining,_,_=archive_state
-            if archive_warnings:
-                st.warning('Archive access: '+'; '.join(archive_warnings))
-            st.metric('Archived finished matches',len(archive))
-            if archive:
-                archived_df=pd.DataFrame(archive)
-                summary=archived_df.groupby('league').agg(matches=('id','count'),
-                    avg_home_goals=('hg','mean'),avg_away_goals=('ag','mean')).reset_index()
-                st.dataframe(summary,hide_index=True,use_container_width=True)
-                st.download_button('⬇️ Export archive CSV',archived_df.to_csv(index=False).encode('utf-8'),
-                                   file_name=f'api-football-archive-{archive_season}.csv',mime='text/csv')
-            st.caption('API-Football requests remaining (last response): '+str(archive_remaining or 'unknown'))
-        else:
-            st.info('Press Load selected archive to retrieve data; no API-Football requests are made automatically.')
+        rows=list(saved.items());selected_ids=[str(r.get('match_id')) for _,r in rows]
+        duplicates=len(set(selected_ids))!=len(selected_ids)
+        total=1.;joint=1.;all_priced=True;books=set()
+        for key,row in rows:
+            col1,col2=st.columns([6,1],vertical_alignment='center')
+            col1.write(f"**{row['match']}** · {row['market']} · {float(row['probability']):.0%} · "+(f"{float(row['odds']):.2f}×" if pd.notna(row['odds']) else 'Unpriced'))
+            if col2.button('Remove',key='remove_'+key):del saved[key];st.rerun()
+            joint*=float(row['probability'])
+            if pd.notna(row['odds']):total*=float(row['odds']);books.add(str(row.get('bookmaker') or 'Unknown'))
+            else:all_priced=False
+        if duplicates:st.error('Multiple markets from the same fixture: joint probability cannot be calculated by multiplying these legs.')
+        elif len(books)>1:st.warning('Multiple bookmakers: the combined price may not be available on one betslip.')
+        c1,c2=st.columns(2)
+        c1.metric('Combined verified odds',f'{total:.2f}×' if all_priced else 'Incomplete')
+        c2.metric('Naïve joint model estimate',f'{joint:.1%}' if not duplicates else 'Not applicable')
+        st.caption('Joint estimates assume independence between fixtures and are not calibrated. Related markets are not multiplied.')
+        export=pd.DataFrame([r for _,r in rows])
+        st.download_button('⬇ Export your parlay',export.to_csv(index=False),file_name='my-parlay.csv',mime='text/csv')
+        if st.button('Clear manual parlay'):saved.clear();st.rerun()
+    if view=='Advanced':
+        with st.expander('Parlay exposure across generated strategies'):
+            _,exposure=parlay_exposure(parlays)
+            if not exposure.empty:st.dataframe(exposure,hide_index=True,use_container_width=True)
+            else:st.info('No scenarios to audit.')
 
-st.subheader('📈 Historical backtest')
-st.caption('Walk-forward predictions on historical finished matches. Each forecast uses only results dated before kickoff. No historical odds are invented.')
-@st.cache_data(ttl=1800,show_spinner=False)
-def cached_backtest(history_rows, minimum, limit):
-    return backtest([dict(row) for row in history_rows],minimum,limit)
-with st.expander('Backtest settings',expanded=False):
-    backtest_limit=st.slider('Historical matches to evaluate',50,500,240,50)
-    backtest_market=st.selectbox('Backtest market',sorted(df['market'].unique()))
-    backtest_league=st.selectbox('Backtest competition',['All']+list(LEAGUES))
-with st.spinner('Evaluating historical predictions…'):
+with t4:
+    st.markdown('### Performance')
+    st.caption('Historical evaluation and pre-kickoff prediction exports. Backtests do not establish profitable betting performance.')
+    @st.cache_data(ttl=1800,show_spinner=False)
+    def cached_bt(rows,minimum,limit):return backtest([dict(r) for r in rows],minimum,limit)
+    with st.expander('Backtest filters',expanded=False):
+        limit=st.slider('Historical matches',50,500,240,50)
+        market=st.selectbox('Market',sorted(df['market'].unique()))
+        league=st.selectbox('Competition',['All']+list(LEAGUES),key='bt_league')
     history_rows=tuple(tuple(sorted(row.items())) for row in history)
-    # Restore dictionaries after creating a hashable cache input.
-    bt=cached_backtest(history_rows,min_samples,backtest_limit)
-if not bt.empty:
-    bt=bt[bt['market']==backtest_market]
-    if backtest_league!='All':bt=bt[bt['league']==backtest_league]
-    summary=metrics(bt)
-    if summary:
-        q1,q2,q3,q4=st.columns(4)
-        q1.metric('Evaluated matches',summary['matches'])
-        q2.metric('Brier score (lower better)',f"{summary['brier']:.3f}")
-        q3.metric('50% threshold accuracy',f"{summary['accuracy_at_50']:.1%}")
-        q4.metric('Actual occurrence rate',f"{summary['observed_rate']:.1%}")
-        benchmark=compare_to_baseline(bt)
-        if benchmark:
-            st.caption(f"Model Brier {benchmark['model_brier']:.3f} · Diagnostic constant-prevalence Brier {benchmark['constant_prevalence_brier']:.3f}. {benchmark['note']}")
+    bt=cached_bt(history_rows,min_samples,limit)
+    if not bt.empty:
+        bt=bt[bt['market']==market]
+        if league!='All':bt=bt[bt['league']==league]
+    if bt.empty:st.info('Not enough historical observations for these filters.')
+    else:
+        summary=metrics(bt)
+        a,b,c=st.columns(3)
+        a.metric('Evaluated matches',summary['matches'])
+        b.metric('Brier score · lower better',f"{summary['brier']:.3f}")
+        c.metric('Observed occurrence',f"{summary['observed_rate']:.1%}")
         cal=calibration(bt)
         if not cal.empty:
-            st.caption('Calibration: average predicted probability vs observed frequency by probability band.')
+            st.markdown('#### Calibration overview')
             st.bar_chart(cal.set_index('bucket')[['predicted','observed']])
-        with st.expander('Historical prediction rows'):
-            st.dataframe(bt[['date','league','match','probability','actual']],hide_index=True,use_container_width=True)
-        st.download_button('⬇️ Export backtest CSV',bt.to_csv(index=False),file_name='backtest.csv',mime='text/csv')
-    else:st.info('No historical predictions for this filter.')
-else:st.info('Insufficient eligible historical data for walk-forward evaluation. Increase historical coverage or reduce minimum samples.')
-st.caption('Backtest caveat: data provider coverage can omit historical fixtures, and repeatedly comparing strategies on the same sample can overfit. No forward performance or profitable edge is established.')
-
-st.subheader('🗂️ Prediction tracking')
-st.caption('Export a timestamped snapshot BEFORE kickoff, keep the CSV yourself, then upload it later to settle against available completed scores. Streamlit does not permanently store these predictions.')
-now=dt.datetime.now(dt.timezone.utc)
-future=df[pd.to_datetime(df['kickoff_utc'],utc=True)>now]
-if not future.empty:
-    st.download_button('⬇️ Save pre-match predictions CSV',snapshot(future).to_csv(index=False).encode('utf-8'),
-        file_name=f'predictions-{now:%Y%m%d-%H%M}-utc.csv',mime='text/csv')
-else:st.info('No future fixtures currently available to snapshot.')
-upload=st.file_uploader('Upload a previously saved predictions CSV',type='csv')
-if upload is not None:
-    try:
-        saved=pd.read_csv(upload)
-        required={'match_id','market','kickoff_utc','recorded_at_utc'}
-        if not required.issubset(saved.columns):
-            st.error('This CSV is missing required snapshot fields: '+', '.join(sorted(required-saved.columns)))
+        if view=='Advanced':
+            benchmark=compare_to_baseline(bt)
+            if benchmark:st.caption(f"Model Brier: {benchmark['model_brier']:.3f} · Constant-prevalence diagnostic: {benchmark['constant_prevalence_brier']:.3f}. {benchmark['note']}")
+            with st.expander('Historical predictions'):st.dataframe(bt,hide_index=True,use_container_width=True)
+        st.download_button('⬇ Export backtest',bt.to_csv(index=False),file_name='backtest.csv',mime='text/csv')
+    st.divider()
+    st.markdown('#### Save and settle predictions')
+    now=dt.datetime.now(dt.timezone.utc)
+    future=df[pd.to_datetime(df['kickoff_utc'],utc=True,errors='coerce')>now]
+    if not future.empty:
+        st.download_button('⬇ Save predictions before kickoff',snapshot(future).to_csv(index=False),file_name=f'predictions-{now:%Y%m%d-%H%M}-utc.csv',mime='text/csv')
+    else:st.info('No future fixtures available to save.')
+    uploaded=st.file_uploader('Upload a previously saved predictions CSV',type='csv')
+    if uploaded is not None:
+        try:
+            saved_df=pd.read_csv(upload)
+            needed={'match_id','market','kickoff_utc','recorded_at_utc'}
+            if not needed.issubset(saved_df.columns):st.error('Missing required fields: '+', '.join(sorted(needed-set(saved_df.columns))))
+            else:
+                settled=settle(saved_df,history)
+                st.dataframe(settled,hide_index=True,use_container_width=True)
+                st.download_button('⬇ Export settled predictions',settled.to_csv(index=False),file_name='settled.csv',mime='text/csv')
+        except (ValueError,pd.errors.ParserError) as e:st.error(f'Could not read CSV: {e}')
+    with st.expander('🗄️ API-Football archive (optional; free-tier seasons only)'):
+        season=st.selectbox('Season starting year',[2024,2023,2022])
+        if not api_key:st.info('Enter your API-Football key in sidebar → API connections.')
+        elif not selected:st.info('Select at least one competition.')
         else:
-            settled=settle(saved,history)
-            st.dataframe(settled,hide_index=True,use_container_width=True)
-            st.download_button('⬇️ Download settled results',settled.to_csv(index=False),file_name='settled-predictions.csv',mime='text/csv')
-    except (ValueError,pd.errors.ParserError) as exc:st.error(f'Unable to read snapshot: {exc}')
+            if st.button('Load archive · uses API quota'):
+                with st.spinner('Fetching older historical data…'):
+                    result=archive(api_key,tuple(selected),season)
+                st.session_state.archive_result=(result,season,tuple(selected))
+            state=st.session_state.get('archive_result')
+            if state and state[1:]==(season,tuple(selected)):
+                (records,warnings,remaining),_,_=state
+                st.metric('Finished archived matches',len(records))
+                if warnings:st.warning('; '.join(warnings))
+                if records:
+                    data=pd.DataFrame(records)
+                    st.dataframe(data.groupby('league').agg(matches=('id','count')).reset_index(),hide_index=True)
+                    st.download_button('⬇ Export archive',data.to_csv(index=False),file_name=f'archive-{season}.csv',mime='text/csv')
+                st.caption(f'Remaining requests reported: {remaining or "unknown"}')
+    st.caption('Predictions are stored only in downloaded CSVs. Streamlit session state and temporary files are not durable storage.')
 
-st.download_button('⬇️ Download analysis CSV',df.to_csv(index=False).encode('utf-8'),file_name=f'football-analysis-{dt.date.today()}.csv',mime='text/csv')
 st.divider()
-st.caption('API-Football archive IDs are kept separate from football-data.org IDs. Older archive results do not influence current forecasts.')
-st.caption('Research only: high odds imply low hit rates; model-implied value is not verified profit. Method: last 365 days of cross-competition team results, recency weighting, strong shrinkage, and independent Poisson scoring. Opponent strength is NOT adjusted: domestic and European results may not be comparable. Sample coverage is not statistical confidence. No shot-based xG, injuries or lineups. Historical walk-forward evaluation is descriptive, not probability calibration. Prices may be from different bookmakers and cannot necessarily be combined.')
+st.caption('Football-data.org supplies current results; The Odds API supplies available prices; API-Football archives are separate. Estimates are uncalibrated and do not incorporate confirmed injuries, lineups or genuine shot-based xG. Never assume a model-market discrepancy implies a profitable opportunity.')
