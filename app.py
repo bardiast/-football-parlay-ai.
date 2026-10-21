@@ -25,7 +25,7 @@ with st.sidebar:
     selected=st.multiselect('Competitions',list(LEAGUES),default=list(LEAGUES))
     diverse=st.toggle('Diversify leagues in each parlay',value=True,help='Prefer a mix of competitions when eligible selections exist; never override price or minimum probability rules.')
     only_priced=st.toggle('Require verified bookmaker odds',value=True,help='Parlays without bookmaker prices cannot show a combined decimal price.')
-    min_samples=st.slider('Minimum home/away samples per team',3,10,3)
+    min_samples=st.slider('Minimum home/away samples per team',1,10,3)
     if st.button('🔄 Refresh live data',use_container_width=True):
         st.cache_data.clear()
         st.rerun()
