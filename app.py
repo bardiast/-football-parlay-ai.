@@ -2,7 +2,7 @@ import os
 import datetime as dt
 import pandas as pd
 import streamlit as st
-from engine import LEAGUES, fixtures_and_history, odds_lookup, candidates, build_parlays, odds_diagnostics
+from engine import LEAGUES, fixtures_and_history, odds_lookup, candidates, build_parlays
 
 st.set_page_config(page_title='Football Probability Lab', page_icon='⚽', layout='wide', initial_sidebar_state='expanded')
 st.markdown('''<style>
