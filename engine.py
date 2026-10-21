@@ -175,7 +175,7 @@ def odds_lookup(api_key, region='eu'):
             fetched+=len(games)
             for game in games:
                 gid=(league,game.get('id') or f"{game.get('home_team')}:{game.get('away_team')}:{game.get('commence_time')}")
-                entry=out.setdefault(gid,{'league':league,'home':game.get('home_team',''),'away':game.get('away_team',''),'date':game.get('commence_time'),'markets':{}})
+                entry=out.setdefault(gid,{'league':league,'home':game.get('home_team',''),'away':game.get('away_team',''),'date':game.get('commence_time'),'markets':{},'by_bookmaker':{}})
                 for book in game.get('bookmakers',[]):
                     for market in book.get('markets',[]):
                         for outcome in market.get('outcomes',[]):
@@ -187,13 +187,14 @@ def odds_lookup(api_key, region='eu'):
                             elif market.get('key')=='totals' and outcome.get('point')==2.5 and outcome.get('name')=='Over':label='Over 2.5 goals'
                             odd=outcome.get('price')
                             if label and isinstance(odd,(int,float)) and odd>1:
+                                entry['by_bookmaker'].setdefault(book.get('title','Unknown'),{})[label]=(float(odd),book.get('title','Unknown'))
                                 prev=entry['markets'].get(label)
                                 if prev is None or odd>prev[0]:entry['markets'][label]=(float(odd),book.get('title','Unknown'))
         except (requests.RequestException,ValueError) as exc:warnings.append(f'{league}: {str(exc)[:100]}')
     warnings.append(f'Odds API returned {fetched} fixtures across six competitions; only 1X2 and over 2.5 prices are requested.')
     return out,'; '.join(warnings)
 
-def match_odds(match, odds):
+def match_odds(match, odds, bookmaker=None):
     code = LEAGUES[match['league']]
     try:
         kickoff = dt.datetime.fromisoformat(
@@ -234,15 +235,15 @@ def match_odds(match, odds):
             best = event
             best_score = score
 
-    return best['markets'] if best else {}
+    return (best.get('by_bookmaker',{}).get(bookmaker,{}) if bookmaker else best['markets']) if best else {}
 
-def candidates(fixtures,history,odds,min_samples=5):
+def candidates(fixtures,history,odds,min_samples=5,bookmaker=None):
     rows=[]
     for m in fixtures:
         result=estimate(m,history,min_samples=min_samples)
         if result is None:continue
         probs,lh,la,nh,na,quality,dh,da=result
-        prices=match_odds(m,odds)
+        prices=match_odds(m,odds,bookmaker=bookmaker)
         for market,p in probs.items():
             found=prices.get(market)
             rows.append({'match_id':m['id'],'league':m['league'],'kickoff_utc':m['date'],'match':f"{m['home']} vs {m['away']}",'market':market,'probability':p,'odds':found[0] if found else None,'bookmaker':found[1] if found else None,'ev':p*found[0]-1 if found else None,'expected_goals':f'{lh:.2f}–{la:.2f}','sample':f'{nh}/{na}', 'sample_quality':quality, 'domestic_samples':f'{dh}/{da}'})

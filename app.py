@@ -3,6 +3,7 @@ import datetime as dt
 import pandas as pd
 import streamlit as st
 from engine import LEAGUES, fixtures_and_history, odds_lookup, candidates, build_parlays, odds_diagnostics
+from analytics import backtest, metrics, calibration, snapshot, settle
 
 st.set_page_config(page_title='Football Probability Lab', page_icon='⚽', layout='wide', initial_sidebar_state='expanded')
 st.markdown('''<style>
@@ -46,8 +47,14 @@ if fixture_notes:st.warning('Fixture provider: '+fixture_notes)
 with st.spinner('Checking bookmaker prices…'):
     odds,odds_notes=get_odds(odds_key)
 if odds_notes:st.info(odds_notes)
+bookmakers=sorted({book for event in odds.values() for book in event.get('by_bookmaker',{})})
+with st.sidebar:
+    bookmaker_choice=st.selectbox('Bookmaker pricing mode',['Best available across bookmakers']+bookmakers,
+        help='Select one bookmaker for a realizable same-bookmaker parlay price. Best available can combine different sportsbooks.')
 with st.spinner('Estimating outcomes…'):
-    df=candidates(fixtures,history,odds,min_samples=min_samples)
+    df=candidates(fixtures,history,odds,min_samples=min_samples,
+                  bookmaker=None if bookmaker_choice.startswith('Best available') else bookmaker_choice)
+
 
 a,b,c,d=st.columns(4)
 a.metric('Upcoming fixtures',len(fixtures))
@@ -128,6 +135,77 @@ else:
         'sample':'Team match samples','sample_quality':'Sample coverage','domestic_samples':'Domestic samples'},
         column_order=display_cols)
 
+st.subheader('🧠 Match intelligence')
+match_names=sorted(df['match'].unique())
+selected_match=st.selectbox('Explore fixture',match_names,key='explorer_match')
+analysis=df[df['match']==selected_match].sort_values('probability',ascending=False)
+if not analysis.empty:
+    first=analysis.iloc[0]
+    col1,col2,col3=st.columns(3)
+    col1.metric('Model expected goals (home–away)',first['expected_goals'])
+    col2.metric('Historical team samples',first['sample'])
+    col3.metric('Evidence coverage',first['sample_quality'])
+    st.dataframe(analysis[['market','probability','odds','bookmaker','ev']].rename(columns={
+        'probability':'Model probability','ev':'Model/price discrepancy'}),hide_index=True,use_container_width=True,
+        column_config={'Model probability':st.column_config.NumberColumn(format='%.1f%%'),
+                       'Model/price discrepancy':st.column_config.NumberColumn(format='%.1%')})
+    st.caption('Supporting evidence: prior team results and recency-weighted goal rates. Caution: no verified injuries, lineups or shot-based xG; domestic-vs-European strength is not calibrated.')
+
+st.subheader('📈 Historical backtest')
+st.caption('Walk-forward predictions on historical finished matches. Each forecast uses only results dated before kickoff. No historical odds are invented.')
+@st.cache_data(ttl=1800,show_spinner=False)
+def cached_backtest(history_rows, minimum, limit):
+    return backtest([dict(row) for row in history_rows],minimum,limit)
+with st.expander('Backtest settings',expanded=False):
+    backtest_limit=st.slider('Historical matches to evaluate',50,500,240,50)
+    backtest_market=st.selectbox('Backtest market',sorted(df['market'].unique()))
+    backtest_league=st.selectbox('Backtest competition',['All']+list(LEAGUES))
+with st.spinner('Evaluating historical predictions…'):
+    history_rows=tuple(tuple(sorted(row.items())) for row in history)
+    # Restore dictionaries after creating a hashable cache input.
+    bt=cached_backtest(history_rows,min_samples,backtest_limit)
+if not bt.empty:
+    bt=bt[bt['market']==backtest_market]
+    if backtest_league!='All':bt=bt[bt['league']==backtest_league]
+    summary=metrics(bt)
+    if summary:
+        q1,q2,q3,q4=st.columns(4)
+        q1.metric('Evaluated matches',summary['matches'])
+        q2.metric('Brier score (lower better)',f"{summary['brier']:.3f}")
+        q3.metric('50% threshold accuracy',f"{summary['accuracy_at_50']:.1%}")
+        q4.metric('Actual occurrence rate',f"{summary['observed_rate']:.1%}")
+        cal=calibration(bt)
+        if not cal.empty:
+            st.caption('Calibration: average predicted probability vs observed frequency by probability band.')
+            st.bar_chart(cal.set_index('bucket')[['predicted','observed']])
+        with st.expander('Historical prediction rows'):
+            st.dataframe(bt[['date','league','match','probability','actual']],hide_index=True,use_container_width=True)
+        st.download_button('⬇️ Export backtest CSV',bt.to_csv(index=False),file_name='backtest.csv',mime='text/csv')
+    else:st.info('No historical predictions for this filter.')
+else:st.info('Insufficient eligible historical data for walk-forward evaluation. Increase historical coverage or reduce minimum samples.')
+st.caption('Backtest caveat: data provider coverage can omit historical fixtures, and repeatedly comparing strategies on the same sample can overfit. No forward performance or profitable edge is established.')
+
+st.subheader('🗂️ Prediction tracking')
+st.caption('Export a timestamped snapshot BEFORE kickoff, keep the CSV yourself, then upload it later to settle against available completed scores. Streamlit does not permanently store these predictions.')
+now=dt.datetime.now(dt.timezone.utc)
+future=df[pd.to_datetime(df['kickoff_utc'],utc=True)>now]
+if not future.empty:
+    st.download_button('⬇️ Save pre-match predictions CSV',snapshot(future).to_csv(index=False).encode('utf-8'),
+        file_name=f'predictions-{now:%Y%m%d-%H%M}-utc.csv',mime='text/csv')
+else:st.info('No future fixtures currently available to snapshot.')
+upload=st.file_uploader('Upload a previously saved predictions CSV',type='csv')
+if upload is not None:
+    try:
+        saved=pd.read_csv(upload)
+        required={'match_id','market','kickoff_utc','recorded_at_utc'}
+        if not required.issubset(saved.columns):
+            st.error('This CSV is missing required snapshot fields: '+', '.join(sorted(required-saved.columns)))
+        else:
+            settled=settle(saved,history)
+            st.dataframe(settled,hide_index=True,use_container_width=True)
+            st.download_button('⬇️ Download settled results',settled.to_csv(index=False),file_name='settled-predictions.csv',mime='text/csv')
+    except (ValueError,pd.errors.ParserError) as exc:st.error(f'Unable to read snapshot: {exc}')
+
 st.download_button('⬇️ Download analysis CSV',df.to_csv(index=False).encode('utf-8'),file_name=f'football-analysis-{dt.date.today()}.csv',mime='text/csv')
 st.divider()
-st.caption('Research only: high odds imply low hit rates; model-implied value is not verified profit. Method: last 365 days of cross-competition team results, recency weighting, strong shrinkage, and independent Poisson scoring. Opponent strength is NOT adjusted: domestic and European results may not be comparable. Sample coverage is not statistical confidence. No xG, injuries, lineups, calibration or backtesting. Prices may be from different bookmakers and cannot necessarily be combined.')
+st.caption('Research only: high odds imply low hit rates; model-implied value is not verified profit. Method: last 365 days of cross-competition team results, recency weighting, strong shrinkage, and independent Poisson scoring. Opponent strength is NOT adjusted: domestic and European results may not be comparable. Sample coverage is not statistical confidence. No shot-based xG, injuries or lineups. Historical walk-forward evaluation is descriptive, not probability calibration. Prices may be from different bookmakers and cannot necessarily be combined.')
