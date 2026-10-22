@@ -38,9 +38,9 @@ with st.sidebar:
     priced_only=st.toggle('Verified odds only',value=True)
     min_samples=st.slider('Minimum team history',3,15,6,help='Minimum relevant completed matches per team. A higher setting reduces coverage.')
     with st.expander('🔐 API connections',expanded=False):
-        football_key=st.text_input('football-data.org token',value=os.getenv('FOOTBALL_DATA_TOKEN',''),type='password')
-        odds_key=st.text_input('The Odds API key',value=os.getenv('ODDS_API_KEY',''),type='password')
-        api_key=st.text_input('API-Football key',value=os.getenv('API_FOOTBALL_KEY',''),type='password')
+        football_key=st.text_input('football-data.org token',value=st.secrets.get('FOOTBALL_DATA_API_KEY',st.secrets.get('FOOTBALL_DATA_TOKEN',os.getenv('FOOTBALL_DATA_TOKEN',''))),type='password')
+        odds_key=st.text_input('The Odds API key',value=st.secrets.get('ODDS_API_KEY',os.getenv('ODDS_API_KEY','')),type='password')
+        api_key=st.text_input('API-Football key',value=st.secrets.get('API_FOOTBALL_KEY',os.getenv('API_FOOTBALL_KEY','')),type='password')
         st.caption('Current matches: football-data.org · Prices: The Odds API · Older archive: API-Football (optional).')
     if st.button('↻ Refresh data',use_container_width=True):
         st.cache_data.clear();st.rerun()
